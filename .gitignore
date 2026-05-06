@@ -35,6 +35,10 @@ build/
 ### cursor ###
 .cursor/
 
+### claude ###
+.claude/
+
+
 ### 敏感本地配置 ###
 src/main/resources/application-dev.yml
 .env
