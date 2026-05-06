@@ -106,7 +106,12 @@ export const useChatStore = defineStore('chat', () => {
     errorMsg.value = ''
 
     // sessionId 为空时由后端在响应里通过 event: session 推回真实 sid
-    const pendingSid = activeSid.value || '__pending__'
+    const apiSid = activeSid.value
+    const pendingSid = apiSid || '__pending__'
+    // 新会话立即切到占位 sid，让 messages computed 能读到刚写入的气泡
+    if (!apiSid) {
+      activeSid.value = '__pending__'
+    }
     if (!messagesBySid.value[pendingSid]) {
       messagesBySid.value[pendingSid] = []
     }
@@ -116,11 +121,12 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = true
     abortController = new AbortController()
 
-    let assignedSid = activeSid.value
+    // 保持 '' 表示「尚未拿到后端真实 sid」，供 onSession 的 guard 使用
+    let assignedSid = apiSid
 
     try {
       await streamChat(
-        { sessionId: activeSid.value, message: content, signal: abortController.signal },
+        { sessionId: apiSid, message: content, signal: abortController.signal },
         {
           onSession: (sid) => {
             if (!assignedSid) {
@@ -133,7 +139,7 @@ export const useChatStore = defineStore('chat', () => {
             }
           },
           onChunk: (delta) => {
-            const sid = assignedSid || pendingSid
+            const sid = activeSid.value
             // 懒占位：若末尾不是 assistant（如刚出现过 tool 气泡），先补一条
             ensureAssistantTail(sid)
             updateLastAssistant(sid, (m) => {
@@ -141,7 +147,7 @@ export const useChatStore = defineStore('chat', () => {
             })
           },
           onTool: (name, payload) => {
-            const sid = assignedSid || pendingSid
+            const sid = activeSid.value
             // 工具调用前若当前 assistant 气泡仍是空（tool 在第一段输出之前发生），先把它干掉
             trimEmptyAssistantTail(sid)
             appendMessage(sid, {
@@ -162,6 +168,11 @@ export const useChatStore = defineStore('chat', () => {
       const sid = assignedSid || pendingSid
       // 收尾：若末尾仍是空 assistant（出错 / 取消 / 模型只调工具不回话），删掉避免界面悬挂"正在思考…"
       trimEmptyAssistantTail(sid)
+      // 流失败且从未拿到真实 sid：清理占位，回到欢迎态
+      if (!assignedSid) {
+        delete messagesBySid.value['__pending__']
+        activeSid.value = ''
+      }
       streaming.value = false
       abortController = null
       // 流结束后刷新一次会话列表（更新 updatedAt / 标题）

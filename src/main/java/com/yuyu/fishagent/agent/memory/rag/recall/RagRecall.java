@@ -135,6 +135,9 @@ public final class RagRecall {
             final String textForExpandAndVector;
             if (ragProperties.isRewriteEnabled()) {
                 textForExpandAndVector = queryRewriter.rewrite(rawUserInput, new RagQueryRewrite.RewriteContext(sessionId));
+                log.debug("[RagRecall] 查询重写 sid={}, rawLen={}, rewrittenLen={}, rewritten=[{}]",
+                        sessionId, rawUserInput.length(), textForExpandAndVector.length(),
+                        textForExpandAndVector.length() > 200 ? textForExpandAndVector.substring(0, 200) + "…" : textForExpandAndVector);
             } else {
                 textForExpandAndVector = rawUserInput.trim();
             }
@@ -147,6 +150,7 @@ public final class RagRecall {
             if (subQueries.isEmpty()) {
                 return Optional.empty();
             }
+            log.debug("[RagRecall] 子查询扩展 sid={}, subCount={}, subQueries={}", sessionId, subQueries.size(), subQueries);
 
             // 虚拟线程执行召回时不会继承 Servlet ThreadLocal；私有索引依赖 UserContextHolder.userId，必须在异步任务内回放快照。
             final UserContext ragUserSnapshot = UserContextHolder.get();
@@ -194,6 +198,24 @@ public final class RagRecall {
             batches.add(userVecFuture.join());
             batches.add(userKnowledgeVecFuture.join());
             batches.add(publicVecFuture.join());
+
+            // ── 召回明细 DEBUG 日志 ──
+            if (log.isDebugEnabled()) {
+                int memTextSum = 0, memVec = userVecFuture.join().size();
+                int ukTextSum = 0, ukVec = userKnowledgeVecFuture.join().size();
+                int pubTextSum = 0, pubVec = publicVecFuture.join().size();
+                for (int i = 0; i < subQueries.size(); i++) {
+                    // per sub-query: [mem, uk, pub] × 3 text searchers
+                    int base = i * 3;
+                    memTextSum += batches.get(base).size();
+                    ukTextSum += batches.get(base + 1).size();
+                    pubTextSum += batches.get(base + 2).size();
+                }
+                log.debug("[RagRecall] 召回明细 sid={} subCount={}: "
+                                + "记忆=[text:{} vec:{}] 用户知识=[text:{} vec:{}] 公共知识=[text:{} vec:{}]",
+                        sessionId, subQueries.size(),
+                        memTextSum, memVec, ukTextSum, ukVec, pubTextSum, pubVec);
+            }
 
             int maxFacts = Math.max(1, ragProperties.getRender().getMaxInjectedFacts());
             List<RecallHit> merged = mergeByMaxScore(batches, maxFacts);

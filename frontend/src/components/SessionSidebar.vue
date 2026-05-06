@@ -267,6 +267,14 @@ function goKnowledge() {
   --el-button-bg-color: transparent;
 }
 
+.new-chat-btn.is-disabled,
+.new-chat-btn.is-disabled:hover {
+  opacity: 0.5;
+  --el-button-disabled-bg-color: transparent;
+  --el-button-disabled-border-color: var(--primary);
+  --el-button-disabled-text-color: var(--primary);
+}
+
 .user-nickname {
   display: block;
   font-size: 13px;
@@ -305,11 +313,14 @@ function goKnowledge() {
   padding: 10px 12px;
   border-radius: 8px;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition:
+    background 0.15s ease,
+    transform 0.15s ease;
 }
 
 .item:hover:not(.disabled) {
   background: var(--bg-hover);
+  transform: translateX(2px);
 }
 
 .item.active {

@@ -38,6 +38,7 @@ build/
 ### claude ###
 .claude/
 
+data/history
 
 ### 敏感本地配置 ###
 src/main/resources/application-dev.yml

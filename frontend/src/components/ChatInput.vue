@@ -105,4 +105,9 @@ watch(activeSid, () => focusInput())
 [data-theme='dark'] .bar {
   box-shadow: 0 -6px 28px rgba(0, 0, 0, 0.45);
 }
+
+:deep(.el-button--primary.is-circle:active) {
+  transform: scale(0.92);
+  transition: transform 0.1s ease;
+}
 </style>

@@ -40,7 +40,11 @@ async function scrollToBottom(force = false): Promise<void> {
   const el = scroller.value
   if (!el) return
   if (force || stickToBottom.value) {
-    el.scrollTop = el.scrollHeight
+    if (force) {
+      el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' })
+    } else {
+      el.scrollTop = el.scrollHeight
+    }
     stickToBottom.value = true
   }
 }
@@ -133,7 +137,7 @@ onMounted(() => {
 }
 
 .welcome .logo {
-  font-size: 56px;
+  font-size: 48px;
 }
 
 .welcome .hello {
@@ -165,7 +169,8 @@ onMounted(() => {
   color: var(--text);
   background: var(--bg-main);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-left: 3px solid var(--primary);
+  border-radius: 12px;
   cursor: pointer;
   transition:
     border-color 0.15s ease,

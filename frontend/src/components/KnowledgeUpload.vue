@@ -190,4 +190,21 @@ function onPublicFileChange(uploadFile: UploadFile) {
   margin-top: 6px;
   min-height: 16px;
 }
+
+/* plain 按钮 disabled 时避免白底：用明确变量覆盖 */
+:deep(.el-button--primary.is-plain.is-disabled),
+:deep(.el-button--primary.is-plain.is-disabled:hover) {
+  opacity: 0.5;
+  --el-button-disabled-bg-color: transparent;
+  --el-button-disabled-border-color: var(--primary);
+  --el-button-disabled-text-color: var(--primary);
+}
+
+:deep(.el-button.is-plain.is-disabled:not(.el-button--primary)),
+:deep(.el-button.is-plain.is-disabled:not(.el-button--primary):hover) {
+  opacity: 0.5;
+  --el-button-disabled-bg-color: transparent;
+  --el-button-disabled-border-color: var(--border);
+  --el-button-disabled-text-color: var(--text-secondary);
+}
 </style>

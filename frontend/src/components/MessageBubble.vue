@@ -142,6 +142,11 @@ async function copy() {
   background: var(--bubble-user);
   color: var(--bubble-user-text);
   border-bottom-right-radius: 4px;
+  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.22);
+}
+
+[data-theme='dark'] .bubble.user {
+  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.32);
 }
 
 .bubble.assistant {
