@@ -1,0 +1,227 @@
+# ═══════════════════════════════════════════════════════════════
+# Fish-Agent  Application Configuration
+# ═══════════════════════════════════════════════════════════════
+
+# ── Server ───────────────────────────────────────────────────
+server:
+  port: 8080
+
+# ── Spring Boot ──────────────────────────────────────────────
+spring:
+  profiles:
+    # 默认 dev：自动加载 application-dev.yml（敏感凭据，gitignore）
+    # 生产：SPRING_PROFILES_ACTIVE=prod
+    active: ${SPRING_PROFILES_ACTIVE:dev}
+
+  application:
+    name: Fish-Agent
+
+  threads:
+    virtual: true
+
+  output:
+    ansi:
+      enabled: always
+
+  # 排除不需要的 OpenAI 自动配置（DeepSeek 仅需 Chat）
+  autoconfigure:
+    exclude:
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiEmbeddingAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration
+      - org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration
+
+  # ── 数据源 ────────────────────────────────────────────────
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${DB_URL:jdbc:mysql://localhost:3306/fish_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:2}
+
+  elasticsearch:
+    uris: ${ELASTICSEARCH_URIS:http://localhost:9200}
+    username: ${ELASTICSEARCH_USERNAME:}
+    password: ${ELASTICSEARCH_PASSWORD:}
+
+  # ── AI 模型 ────────────────────────────────────────────────
+  ai:
+    # ChatModel 自动配置选择：dashscope | ollama | openai
+    # 若未在任意 PropertySource 中设置 spring.ai.model.chat，
+    # 由 FishLlmEnvironmentPostProcessor 根据 fish.llm.chat-provider 补全
+    dashscope:
+      api-key: ${DASHSCOPE_API_KEY:}
+      embedding:
+        options:
+          model: ${DASHSCOPE_EMBEDDING_MODEL:text-embedding-v2}
+          dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
+
+    ollama:
+      base-url: ${OLLAMA_BASE_URL:http://localhost:11434}
+      chat:
+        options:
+          model: ${OLLAMA_CHAT_MODEL:qwen2.5:7b}
+
+    openai:
+      base-url: ${DEEPSEEK_BASE_URL:https://api.deepseek.com}
+      api-key: ${DEEPSEEK_API_KEY:}
+      chat:
+        options:
+          model: ${DEEPSEEK_CHAT_MODEL:deepseek-chat}
+
+  # ── Web / 邮件 ─────────────────────────────────────────────
+  servlet:
+    multipart:
+      max-file-size: ${FISH_KNOWLEDGE_MAX_FILE_SIZE:50MB}
+      max-request-size: ${FISH_KNOWLEDGE_MAX_REQUEST_SIZE:55MB}
+
+  mail:
+    host: ${MAIL_HOST:}
+    port: ${MAIL_PORT:465}
+    username: ${MAIL_USERNAME:}
+    password: ${MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          ssl:
+            enable: true
+          starttls:
+            enable: true
+
+# ── MyBatis-Plus ─────────────────────────────────────────────
+mybatis-plus:
+  mapper-locations: classpath*:mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+
+# ── Logging ──────────────────────────────────────────────────
+logging:
+  level:
+    reactor.netty.http.client: DEBUG
+    com.yuyu.fishagent:
+      agent.memory: debug
+      agent.tool: debug
+      service: debug
+
+# ═══════════════════════════════════════════════════════════════
+# Fish-Agent 业务配置
+# ═══════════════════════════════════════════════════════════════
+fish:
+
+  # ── 模型路由 ────────────────────────────────────────────────
+  llm:
+    # DASHSCOPE | OLLAMA | DEEPSEEK
+    chat-provider: ${FISH_LLM_CHAT_PROVIDER:DEEPSEEK}
+    # 嵌入（仅 DASHSCOPE / OLLAMA，DeepSeek 不支持）
+    embedding:
+      provider: ${FISH_LLM_EMBEDDING_PROVIDER:DASHSCOPE}
+
+  # ── Agent 行为 ─────────────────────────────────────────────
+  agent:
+    max-iterations: 10
+    history-dir: data/history
+    sandbox-dir: data/sandbox
+    instruction: |-
+      你是一个名为 Fish 的智能助手，擅长理解用户意图并合理使用工具来解决问题。
+      回答时请保持简洁、准确；当工具返回结果后再总结给用户。
+      若消息中出现可供参考的用户背景信息，请直接据此作答，像一直了解对方一样自然承接，不要先否认「不记得」再引用背景。
+      勿在面向用户的句子中提及：长期记忆、记忆片段、检索结果、系统提示、上下文块、RAG、embedding 等技术或来源措辞；也不要用「根据你之前提供的…」「根据系统/上文…」这类元叙述。
+      同一条系统消息开头的「当前会话时间」表示应用服务器此刻的本地时间；判断「今天、现在、最近」时以它为锚，不要凭训练直觉或搜索结果臆测当前公历日期。
+      网络搜索返回的日期多为新闻发稿/事件发生时间或站点元数据，不等于「此刻」；不同搜索源索引新旧可能不一致，不要仅因某条摘要年份与直觉不符就断言真实日期。需要与用户时区对齐或二次确认时刻时，可调用工具 get_current_datetime（可传 IANA 时区）。
+
+  # ── 记忆系统 ───────────────────────────────────────────────
+  memory:
+    short-term-window-size: 20
+    summary-trigger-threshold: 30
+    redis-key-prefix: fish:memory
+    short-term-ttl-days: 30
+    long-term-enabled: ${MEMORY_LONG_TERM_ENABLED:true}
+    long-term-index-name: ${MEMORY_USER_INDEX:fish-user-memory}
+    embedding-dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
+    # 记忆压缩 / 长期事实抽取专用 Chat（DEEPSEEK 下为独立 OpenAiChatModel）
+    chat:
+      enabled: ${MEMORY_CHAT_ENABLED:true}
+      model: ${MEMORY_CHAT_MODEL:deepseek-chat}
+      temperature: ${MEMORY_CHAT_TEMPERATURE:0.1}
+
+  # ── RAG 检索增强 ───────────────────────────────────────────
+  rag:
+    enabled: ${FISH_RAG_ENABLED:true}
+    rewrite-enabled: ${FISH_RAG_REWRITE_ENABLED:false}
+    # 查询重写（仅 rewrite-enabled=true 时生效）：NONE | CHAT_MODEL
+    rewrite-provider: NONE
+    rewrite-temperature: 0.1
+    rewrite-max-tokens: 256
+    rewrite-max-chars: 512
+    # 多查询召回
+    recall:
+      max-sub-queries: 12
+      min-token-chars: 1
+      per-subquery-size: 5
+      vector-leg-enabled: true
+      knn-num-candidates: 80
+    # 结果渲染上限
+    render:
+      max-injected-facts: 8
+      max-injected-chars: 4000
+
+  # ── 外部工具 ───────────────────────────────────────────────
+  tools:
+    # Tavily 搜索：https://docs.tavily.com/documentation/api-reference/endpoint/search
+    tavily:
+      api-key: ${TAVILY_API_KEY:}
+      base-url: https://api.tavily.com
+      max-results: 5
+    # 博查 AI 搜索：https://open.bochaai.com/
+    bocha:
+      api-key: ${BOCHA_API_KEY:}
+      base-url: https://api.bochaai.com
+      count: 5
+    # 高德地图 API：https://lbs.amap.com/api/webservice/guide/api/georegeo (地理编码)
+    #                https://lbs.amap.com/api/webservice/guide/api-advanced/weatherinfo (天气)
+    amap:
+      key: ${AMAP_KEY:}
+      base-url: https://restapi.amap.com
+
+  # ── RustFS 对象存储（S3 兼容） ──────────────────────────────
+  rustfs:
+    enabled: ${RUSTFS_ENABLED:true}
+    endpoint: ${RUSTFS_ENDPOINT:http://localhost:9000}
+    access-key: ${RUSTFS_ACCESS_KEY:}
+    secret-key: ${RUSTFS_SECRET_KEY:}
+    bucket-chat: ${RUSTFS_BUCKET_CHAT:fish-chat}
+    bucket-docs: ${RUSTFS_BUCKET_DOCS:fish-docs}
+
+  # ── 对话限流（Redis Lua：令牌桶 + SSE 并发） ────────────────
+  rate-limit:
+    enabled: ${FISH_RATE_LIMIT_ENABLED:true}
+    token-bucket:
+      capacity: ${FISH_RATE_LIMIT_TOKEN_BUCKET_CAPACITY:60}
+      refill-rate: ${FISH_RATE_LIMIT_TOKEN_BUCKET_REFILL_RATE:1.0}
+      key-ttl: ${FISH_RATE_LIMIT_TOKEN_BUCKET_KEY_TTL:120}
+    sse-concurrent:
+      max-connections: ${FISH_RATE_LIMIT_SSE_MAX_CONNECTIONS:2}
+      key-ttl: ${FISH_RATE_LIMIT_SSE_KEY_TTL:300}
+
+  # ── 登录鉴权（Session 存 Redis，X-Auth-Token 头） ──────────
+  auth:
+    session-ttl-seconds: ${AUTH_SESSION_TTL:86400}
+    session-key-prefix: fish:session
+    white-list: /api/auth/login,/api/auth/register,/api/auth/logout
+
+  # ── 知识库 ─────────────────────────────────────────────────
+  knowledge:
+    public-index-name: ${KNOWLEDGE_PUBLIC_INDEX:fish-public-knowledge}
+    user-knowledge-index-name: ${KNOWLEDGE_USER_INDEX:fish-user-knowledge}
+    document-ingest-stream-key: ${FISH_DOC_INGEST_STREAM:fish:doc:ingest}
+    compensation:
+      enabled: ${KNOWLEDGE_COMPENSATION_ENABLED:true}
+      timeout-minutes: ${KNOWLEDGE_COMPENSATION_TIMEOUT_MINUTES:10}

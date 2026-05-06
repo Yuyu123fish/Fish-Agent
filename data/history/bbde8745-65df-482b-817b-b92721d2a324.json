@@ -1,0 +1,17 @@
+[ {
+  "role" : "user",
+  "content" : "我叫鱼鱼",
+  "createdAt" : 1777274932486
+}, {
+  "role" : "assistant",
+  "content" : "你好，鱼鱼！很高兴认识你～有什么问题或需要帮忙的地方，随时告诉我哦 \uD83D\uDC1F",
+  "createdAt" : 1777274932486
+}, {
+  "role" : "user",
+  "content" : "我叫鱼鱼",
+  "createdAt" : 1777275247191
+}, {
+  "role" : "assistant",
+  "content" : "你好，鱼鱼！我们已经打过招呼啦～\uD83D\uDE0A  \n需要我帮你做点什么吗？比如查天气、算数学、读文件、搜索信息，或者写封邮件？随时吩咐！",
+  "createdAt" : 1777275247191
+} ]

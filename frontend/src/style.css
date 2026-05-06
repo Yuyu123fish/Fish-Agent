@@ -1,0 +1,194 @@
+:root {
+  --primary: #4f46e5;
+
+  /* 布局背景：侧栏 / 主区 / 整页 */
+  --bg-page: #f4f4f5;
+  --bg-main: #ffffff;
+  --bg-sidebar: #fafafa;
+
+  /* 文本 */
+  --text-primary: #111827;
+  --text: #303133;
+  --text-secondary: #71717a;
+
+  /* 边框 */
+  --border: #e8e8ea;
+
+  /* 气泡颜色：用户 / 助手 / 工具 */
+  --bubble-user: #27272a;
+  --bubble-user-text: #ffffff;
+  --bubble-assistant: #ffffff;
+  --bubble-assistant-text: #18181b;
+  --bubble-tool: #fef3c7;
+  --bubble-tool-border: #fcd34d;
+
+  /* 交互 / 组件层 */
+  --bg-hover: #f3f4f6;
+  --bg-active: #f0f0f1;
+  --copy-btn-bg: rgba(255, 255, 255, 0.6);
+
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', Helvetica, Arial, sans-serif;
+}
+
+[data-theme='dark'] {
+  --primary: #6366f1;
+
+  --bg-page: #0f0f10;
+  --bg-main: #141415;
+  --bg-sidebar: #1a1a1b;
+
+  --text-primary: #e8e8ea;
+  --text: #c9d1d9;
+  --text-secondary: #8b949e;
+
+  --border: #2e2e30;
+
+  --bubble-user: #4f46e5;
+  --bubble-user-text: #ffffff;
+  --bubble-assistant: #1e1e20;
+  --bubble-assistant-text: #e0e0e4;
+  --bubble-tool: #2a1f0a;
+  --bubble-tool-border: #854d0e;
+
+  --bg-hover: #2a2a2c;
+  --bg-active: #252527;
+  --copy-btn-bg: rgba(255, 255, 255, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+  background: var(--bg-page);
+  color: var(--text);
+}
+
+.markdown-body {
+  line-height: 1.7;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.markdown-body p {
+  margin: 0 0 8px 0;
+}
+
+.markdown-body pre {
+  background: #1f1f1f;
+  color: #f8f8f2;
+  padding: 12px;
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.markdown-body code {
+  font-family: 'JetBrains Mono', Consolas, Menlo, monospace;
+  font-size: 13px;
+}
+
+.markdown-body p code {
+  background: rgba(64, 158, 255, 0.12);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #2563eb;
+}
+[data-theme='dark'] .markdown-body p code {
+  color: #93c5fd;
+  background: rgba(147, 197, 253, 0.15);
+}
+
+.markdown-body ul,
+.markdown-body ol {
+  padding-left: 22px;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  margin: 8px 0;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+}
+
+/* ============================================================
+   Element Plus 暗色模式全局覆盖
+   覆盖 .dark class 未完全处理的组件内部变量
+   ============================================================ */
+[data-theme='dark'] .el-table {
+  --el-table-bg-color: var(--bg-main);
+  --el-table-tr-bg-color: var(--bg-main);
+  --el-table-header-bg-color: var(--bg-sidebar);
+  --el-table-row-hover-bg-color: var(--bg-hover);
+  --el-table-border-color: var(--border);
+  --el-text-color-regular: var(--text);
+}
+
+[data-theme='dark'] .el-table__body tr.el-table__row--striped td {
+  background-color: var(--bg-sidebar);
+}
+
+[data-theme='dark'] .el-pagination .btn-prev,
+[data-theme='dark'] .el-pagination .btn-next,
+[data-theme='dark'] .el-pager li {
+  background-color: var(--bg-main);
+  color: var(--text);
+}
+
+[data-theme='dark'] .el-pager li.is-active {
+  background-color: var(--primary);
+}
+
+[data-theme='dark'] .el-button.is-plain {
+  --el-button-bg-color: var(--bg-main);
+  --el-button-border-color: var(--border);
+  --el-button-text-color: var(--text);
+  --el-button-hover-bg-color: var(--bg-hover);
+  --el-button-hover-border-color: var(--primary);
+  --el-button-hover-text-color: var(--primary);
+}
+
+[data-theme='dark'] .el-tabs__item {
+  color: var(--text-secondary);
+}
+[data-theme='dark'] .el-tabs__item.is-active {
+  color: var(--primary);
+}
+
+[data-theme='dark'] .el-input__wrapper {
+  background-color: var(--bg-main);
+  box-shadow: 0 0 0 1px var(--border) inset;
+}
+[data-theme='dark'] .el-input__inner {
+  color: var(--text);
+}
+[data-theme='dark'] .el-input__inner::placeholder {
+  color: var(--text-secondary);
+}
+
+[data-theme='dark'] .el-card {
+  background-color: var(--bg-main);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+[data-theme='dark'] .el-form-item__label {
+  color: var(--text);
+}
+
+[data-theme='dark'] .el-message-box {
+  --el-bg-color: var(--bg-main);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text);
+}
+

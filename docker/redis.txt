@@ -1,0 +1,6 @@
+docker run -d `
+  --name redis `
+  -p 6379:6379 `
+  --restart always `
+  -v 你的目录:/data `
+  redis:8.0 redis-server --appendonly yes

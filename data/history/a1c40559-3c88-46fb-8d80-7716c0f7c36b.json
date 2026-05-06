@@ -1,0 +1,9 @@
+[ {
+  "role" : "user",
+  "content" : "我叫什么名字？",
+  "createdAt" : 1777693507729
+}, {
+  "role" : "assistant",
+  "content" : "我无法获取你的名字，因为此前的对话中你没有提供过。如果你愿意，可以告诉我你的名字 \uD83D\uDE0A",
+  "createdAt" : 1777693507729
+} ]

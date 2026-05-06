@@ -1,0 +1,62 @@
+================================================================================
+Elasticsearch 索引说明（Fish-Agent）
+================================================================================
+注意：以下 JSON 为 Kibana Dev Tools / curl 请求体，不得包含 // 注释，否则 ES 会返回 400。
+
+--------------------------------------------------------------------------------
+一次性创建 fish-user-memory（含文档溯源字段）
+--------------------------------------------------------------------------------
+PUT fish-user-memory
+{
+  "mappings": {
+    "properties": {
+      "id":           { "type": "keyword" },
+      "user_id":      { "type": "keyword" },
+      "content":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "embedding":    { "type": "dense_vector", "dims": 1536, "index": true, "similarity": "cosine" },
+      "created_at":   { "type": "date", "format": "epoch_millis" },
+      "doc_id":       { "type": "keyword" },
+      "source_type":  { "type": "keyword" },
+      "page_number":  { "type": "integer" },
+      "chunk_index":  { "type": "integer" }
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+一次性创建 fish-public-knowledge（含 doc 溯源与 created_at）
+--------------------------------------------------------------------------------
+PUT fish-public-knowledge
+{
+  "mappings": {
+    "properties": {
+      "id":           { "type": "keyword" },
+      "doc_name":     { "type": "keyword" },
+      "content":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "embedding":    { "type": "dense_vector", "dims": 1536, "index": true, "similarity": "cosine" },
+      "created_at":   { "type": "date", "format": "epoch_millis" },
+      "doc_id":       { "type": "keyword" },
+      "page_number":  { "type": "integer" },
+      "chunk_index":  { "type": "integer" }
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+一次性创建 fish-user-knowledge（用户上传文档切片，与 fish-user-memory 对话事实分离）
+--------------------------------------------------------------------------------
+PUT fish-user-knowledge
+{
+  "mappings": {
+    "properties": {
+      "id":           { "type": "keyword" },
+      "user_id":      { "type": "keyword" },
+      "content":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "embedding":    { "type": "dense_vector", "dims": 1536, "index": true, "similarity": "cosine" },
+      "created_at":   { "type": "date", "format": "epoch_millis" },
+      "doc_id":       { "type": "keyword" },
+      "page_number":  { "type": "integer" },
+      "chunk_index":  { "type": "integer" }
+    }
+  }
+}

@@ -1,0 +1,7 @@
+docker run -d `
+  --name rustfs_local `
+  -p 9000:9000 `
+  -p 9001:9001 `
+  -v 你的目录:/data `
+  rustfs/rustfs:latest `
+  /data
