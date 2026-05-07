@@ -53,6 +53,14 @@ public class GlobalAuthInterceptor implements HandlerInterceptor {
         String token = resolveToken(request);
         Optional<UserContext> ctxOpt = redisSessionManager.getSession(token);
         if (ctxOpt.isEmpty()) {
+            String reason;
+            if (token == null || token.isBlank()) {
+                reason = "缺少认证令牌";
+            } else {
+                String prefix = token.length() > 8 ? token.substring(0, 8) + "***" : token;
+                reason = String.format("令牌无效或已过期 (prefix=%s)", prefix);
+            }
+            log.warn("[Auth] 401 未授权访问 — URI: {}, 原因: {}", request.getRequestURI(), reason);
             sendUnauthorized(response, "invalid or expired session");
             return false;
         }

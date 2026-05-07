@@ -14,26 +14,7 @@
  */
 
 import type { ChatMessage, SessionInfo } from '@/types/chat'
-import { useAuthStore } from '@/store/auth'
-
-const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
-
-function url(path: string): string {
-  return `${API_BASE}${path}`
-}
-
-/**
- * 附带登录令牌（Pinia 需在应用启动后使用）。
- */
-function authHeaders(extra?: Record<string, string>): HeadersInit {
-  const auth = useAuthStore()
-  const t = auth.getToken()
-  const h: Record<string, string> = { ...extra }
-  if (t) {
-    h['X-Auth-Token'] = t
-  }
-  return h
-}
+import { apiUrl, authFetch } from './http'
 
 export interface SseHandlers {
   onChunk?: (delta: string) => void
@@ -103,12 +84,12 @@ function parseFrame(raw: string): SseEvent | null {
 export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Promise<void> {
   let resp: Response
   try {
-    resp = await fetch(url('/api/chat/stream'), {
+    resp = await authFetch('/api/chat/stream', {
       method: 'POST',
-      headers: authHeaders({
+      headers: {
         'Content-Type': 'application/json',
         Accept: 'text/event-stream'
-      }),
+      },
       body: JSON.stringify({
         sessionId: opts.sessionId ?? '',
         message: opts.message
@@ -135,7 +116,6 @@ export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Pr
           handlers.onChunk?.(ev.data)
           break
         case 'tool': {
-          // 约定 data 形如 {"name":"xxx","payload":"..."} 的 JSON
           let toolName = ev.data
           let payload: string | undefined
           try {
@@ -183,23 +163,20 @@ async function safeText(resp: Response): Promise<string> {
 }
 
 export async function listSessions(): Promise<SessionInfo[]> {
-  const r = await fetch(url('/api/chat/sessions'), { headers: authHeaders() })
+  const r = await authFetch('/api/chat/sessions')
   if (!r.ok) throw new Error(`列出会话失败 HTTP ${r.status}`)
   return r.json()
 }
 
 export async function getHistory(sessionId: string): Promise<ChatMessage[]> {
-  const r = await fetch(url(`/api/chat/sessions/${encodeURIComponent(sessionId)}`), {
-    headers: authHeaders()
-  })
+  const r = await authFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`)
   if (!r.ok) throw new Error(`加载历史失败 HTTP ${r.status}`)
   return r.json()
 }
 
 export async function deleteSession(sessionId: string): Promise<void> {
-  const r = await fetch(url(`/api/chat/sessions/${encodeURIComponent(sessionId)}`), {
-    method: 'DELETE',
-    headers: authHeaders()
+  const r = await authFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'DELETE'
   })
   if (!r.ok) throw new Error(`删除会话失败 HTTP ${r.status}`)
 }

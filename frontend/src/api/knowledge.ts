@@ -1,20 +1,4 @@
-import { useAuthStore } from '@/store/auth'
-
-const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/$/, '')
-
-function url(path: string): string {
-  return `${API_BASE}${path}`
-}
-
-function authHeaders(extra?: Record<string, string>): HeadersInit {
-  const auth = useAuthStore()
-  const t = auth.getToken()
-  const h: Record<string, string> = { ...extra }
-  if (t) {
-    h['X-Auth-Token'] = t
-  }
-  return h
-}
+import { apiUrl, authFetch } from './http'
 
 export interface KnowledgeUploadResult {
   taskId: string
@@ -67,9 +51,8 @@ async function parseError(r: Response): Promise<string> {
 export async function uploadUserKnowledge(file: File): Promise<KnowledgeUploadResult> {
   const fd = new FormData()
   fd.append('file', file)
-  const r = await fetch(url('/api/knowledge/upload'), {
+  const r = await authFetch('/api/knowledge/upload', {
     method: 'POST',
-    headers: authHeaders(),
     body: fd
   })
   if (!r.ok) {
@@ -84,9 +67,8 @@ export async function uploadUserKnowledge(file: File): Promise<KnowledgeUploadRe
 export async function uploadAdminKnowledge(file: File): Promise<KnowledgeUploadResult> {
   const fd = new FormData()
   fd.append('file', file)
-  const r = await fetch(url('/api/admin/knowledge/upload'), {
+  const r = await authFetch('/api/admin/knowledge/upload', {
     method: 'POST',
-    headers: authHeaders(),
     body: fd
   })
   if (!r.ok) {
@@ -105,9 +87,9 @@ export async function initMultipartUpload(
   scope: 'private' | 'public'
 ): Promise<MultipartInitResponse> {
   const path = scope === 'public' ? '/api/admin/knowledge/upload/init' : '/api/knowledge/upload/init'
-  const r = await fetch(url(path), {
+  const r = await authFetch(path, {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       fileName,
       fileSize,
@@ -136,9 +118,8 @@ export async function uploadChunk(
   fd.append('minioPath', minioPath)
   fd.append('partNumber', String(partNumber))
   fd.append('chunk', chunk, `part-${partNumber}`)
-  const r = await fetch(url('/api/knowledge/upload/chunk'), {
+  const r = await authFetch('/api/knowledge/upload/chunk', {
     method: 'POST',
-    headers: authHeaders(),
     body: fd
   })
   if (!r.ok) {
@@ -156,9 +137,9 @@ export async function completeMultipartUpload(
   minioPath: string,
   parts: MultipartPartInfo[]
 ): Promise<KnowledgeUploadResult> {
-  const r = await fetch(url('/api/knowledge/upload/complete'), {
+  const r = await authFetch('/api/knowledge/upload/complete', {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskId, uploadId, minioPath, parts })
   })
   if (!r.ok) {
@@ -171,9 +152,9 @@ export async function completeMultipartUpload(
  * 取消分片上传。
  */
 export async function abortMultipartUpload(taskId: string, uploadId: string, minioPath: string): Promise<void> {
-  const r = await fetch(url('/api/knowledge/upload/abort'), {
+  const r = await authFetch('/api/knowledge/upload/abort', {
     method: 'POST',
-    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ taskId, uploadId, minioPath })
   })
   if (!r.ok) {
@@ -185,9 +166,7 @@ export async function abortMultipartUpload(taskId: string, uploadId: string, min
  * 轮询文档解析任务状态。
  */
 export async function pollTaskStatus(taskId: string): Promise<DocumentTaskStatus> {
-  const r = await fetch(url(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`), {
-    headers: authHeaders()
-  })
+  const r = await authFetch(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`)
   if (!r.ok) {
     throw new Error(await parseError(r))
   }
@@ -199,7 +178,7 @@ export async function pollTaskStatus(taskId: string): Promise<DocumentTaskStatus
  */
 export async function listMyDocuments(page = 1, size = 20): Promise<DocumentMetadataPage> {
   const q = new URLSearchParams({ page: String(page), size: String(size) })
-  const r = await fetch(url(`/api/knowledge/documents?${q}`), { headers: authHeaders() })
+  const r = await authFetch(`/api/knowledge/documents?${q}`)
   if (!r.ok) {
     throw new Error(await parseError(r))
   }
@@ -211,7 +190,7 @@ export async function listMyDocuments(page = 1, size = 20): Promise<DocumentMeta
  */
 export async function listAllDocuments(page = 1, size = 20): Promise<DocumentMetadataPage> {
   const q = new URLSearchParams({ page: String(page), size: String(size) })
-  const r = await fetch(url(`/api/admin/knowledge/documents?${q}`), { headers: authHeaders() })
+  const r = await authFetch(`/api/admin/knowledge/documents?${q}`)
   if (!r.ok) {
     throw new Error(await parseError(r))
   }
@@ -222,9 +201,8 @@ export async function listAllDocuments(page = 1, size = 20): Promise<DocumentMet
  * 删除文档任务（本人或管理员）。
  */
 export async function deleteDocument(taskId: string): Promise<void> {
-  const r = await fetch(url(`/api/knowledge/documents/${encodeURIComponent(taskId)}`), {
-    method: 'DELETE',
-    headers: authHeaders()
+  const r = await authFetch(`/api/knowledge/documents/${encodeURIComponent(taskId)}`, {
+    method: 'DELETE'
   })
   if (!r.ok) {
     throw new Error(await parseError(r))

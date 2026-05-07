@@ -4,7 +4,9 @@
       "Bash(python3 -c ' *)",
       "Bash(python -c ' *)",
       "Bash(pip install *)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(npx vue-tsc *)",
+      "Bash(mvn compile *)"
     ]
   }
 }
