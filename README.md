@@ -21,6 +21,7 @@
 
 知识库闭环：前端上传（直传/分片）→ Java 写入 RustFS + MySQL + Redis Stream → Python Worker 异步消费 → PyMuPDF + Tesseract OCR 解析 PDF → tiktoken 分块 → DashScope embedding → ES 批量写入 → 前端管理页。
 
+![img.png](img.png)
 ```mermaid
 flowchart LR
     A[Vue 3 SPA] -->|SSE + X-Auth-Token| B[Spring Boot :8080]
