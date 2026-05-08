@@ -71,40 +71,43 @@ onMounted(() => {
 
 <template>
   <div class="wrap" ref="scroller" @scroll="updateStick">
-    <div v-if="messages.length === 0" class="welcome">
-      <div class="logo">🐟</div>
-      <div class="hello">你好，我是 Fish Agent</div>
-      <div class="tip">问我任何事，我会调用合适的工具帮你解决。</div>
-      <div class="suggestions">
-        <button
-          v-for="(s, idx) in suggestions"
-          :key="idx"
-          type="button"
-          class="suggestion-card"
-          :disabled="streaming"
-          @click="sendSuggestion(s)"
-        >
-          {{ s }}
-        </button>
+    <div class="messages-center">
+      <div v-if="messages.length === 0" class="welcome">
+        <div class="welcome-glow"></div>
+        <div class="logo">🐟</div>
+        <div class="hello">你好，我是 Fish Agent</div>
+        <div class="tip">问我任何事，我会调用合适的工具帮你解决。</div>
+        <div class="suggestions">
+          <button
+            v-for="(s, idx) in suggestions"
+            :key="idx"
+            type="button"
+            class="suggestion-card"
+            :disabled="streaming"
+            @click="sendSuggestion(s)"
+          >
+            {{ s }}
+          </button>
+        </div>
       </div>
+
+      <MessageBubble
+        v-for="(m, i) in messages"
+        :key="i"
+        :msg="m"
+        :is-last="i === messages.length - 1"
+        :streaming="streaming"
+      />
+
+      <el-alert
+        v-if="errorMsg"
+        :title="errorMsg"
+        type="error"
+        show-icon
+        :closable="false"
+        class="err"
+      />
     </div>
-
-    <MessageBubble
-      v-for="(m, i) in messages"
-      :key="i"
-      :msg="m"
-      :is-last="i === messages.length - 1"
-      :streaming="streaming"
-    />
-
-    <el-alert
-      v-if="errorMsg"
-      :title="errorMsg"
-      type="error"
-      show-icon
-      :closable="false"
-      class="err"
-    />
 
     <transition name="fade">
       <button
@@ -130,21 +133,47 @@ onMounted(() => {
   position: relative;
 }
 
+.messages-center {
+  max-width: 800px;
+  width: 100%;
+  margin: 0 auto;
+}
+
 .welcome {
+  position: relative;
   margin: auto 0;
   text-align: center;
   color: var(--text-secondary);
 }
 
+.welcome-glow {
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(79, 70, 229, 0.12), transparent 70%);
+  top: -40px;
+  left: 50%;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+[data-theme='dark'] .welcome-glow {
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.15), transparent 70%);
+}
+
 .welcome .logo {
-  font-size: 48px;
+  font-size: 56px;
+  animation: float 3s ease-in-out infinite;
+  position: relative;
+  z-index: 1;
 }
 
 .welcome .hello {
-  font-size: 22px;
-  font-weight: 600;
+  font-size: 24px;
+  font-weight: 700;
   color: var(--text-primary);
-  margin-top: 12px;
+  margin-top: 16px;
 }
 
 .welcome .tip {
@@ -155,33 +184,40 @@ onMounted(() => {
 .suggestions {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
-  max-width: 520px;
-  margin: 28px auto 0;
+  gap: 12px;
+  max-width: 560px;
+  margin: 32px auto 0;
   padding: 0 8px;
 }
 
 .suggestion-card {
   text-align: left;
-  padding: 12px 14px;
+  padding: 14px 16px;
   font-size: 13px;
-  line-height: 1.45;
+  line-height: 1.5;
   color: var(--text);
   background: var(--bg-main);
   border: 1px solid var(--border);
   border-left: 3px solid var(--primary);
-  border-radius: 12px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease,
-    background 0.15s ease;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+    border-color var(--transition-fast),
+    box-shadow var(--transition-fast),
+    transform var(--transition-fast),
+    background var(--transition-fast);
+  box-shadow: var(--shadow-sm);
 }
 
 .suggestion-card:hover:not(:disabled) {
   border-color: var(--primary);
-  box-shadow: 0 4px 14px rgba(79, 70, 229, 0.12);
+  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.15);
+  transform: translateY(-2px);
+  background: var(--bg-hover);
+}
+
+.suggestion-card:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .suggestion-card:disabled {

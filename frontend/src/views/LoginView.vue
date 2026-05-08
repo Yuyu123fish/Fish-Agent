@@ -51,6 +51,8 @@ async function onRegister() {
 
 <template>
   <div class="login-page">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
     <el-card class="card" shadow="never">
       <div class="brand">
         <span class="brand-icon">🐟</span>
@@ -65,7 +67,9 @@ async function onRegister() {
             <el-form-item label="密码">
               <el-input v-model="password" type="password" autocomplete="current-password" show-password />
             </el-form-item>
-            <el-button type="primary" native-type="submit" :loading="loading" style="width: 100%">登录</el-button>
+            <el-button type="primary" native-type="submit" :loading="loading" class="login-btn" style="width: 100%">
+              登录
+            </el-button>
           </el-form>
         </el-tab-pane>
         <el-tab-pane label="注册" name="register">
@@ -79,7 +83,9 @@ async function onRegister() {
             <el-form-item label="密码（至少 6 位）">
               <el-input v-model="password" type="password" autocomplete="new-password" show-password />
             </el-form-item>
-            <el-button type="primary" native-type="submit" :loading="loading" style="width: 100%">注册</el-button>
+            <el-button type="primary" native-type="submit" :loading="loading" class="login-btn" style="width: 100%">
+              注册
+            </el-button>
           </el-form>
         </el-tab-pane>
       </el-tabs>
@@ -93,14 +99,51 @@ async function onRegister() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--bg-page, #0f1419);
+  background: var(--gradient-login-bg);
+  position: relative;
+  overflow: hidden;
 }
+
+.orb {
+  position: absolute;
+  border-radius: 50%;
+  filter: blur(80px);
+  opacity: 0.4;
+  pointer-events: none;
+}
+
+.orb-1 {
+  width: 400px;
+  height: 400px;
+  background: rgba(99, 102, 241, 0.35);
+  top: -100px;
+  right: -80px;
+}
+
+.orb-2 {
+  width: 300px;
+  height: 300px;
+  background: rgba(168, 85, 247, 0.3);
+  bottom: -60px;
+  left: -60px;
+}
+
 .card {
+  position: relative;
+  z-index: 1;
   width: 400px;
   max-width: 92vw;
-  border: 1px solid var(--border);
-  box-shadow: none;
-  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: var(--radius-xl);
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-lg);
+}
+
+[data-theme='dark'] .card {
+  background: rgba(30, 30, 35, 0.85);
+  border-color: rgba(255, 255, 255, 0.08);
 }
 
 :deep(.el-card__body) {
@@ -116,12 +159,36 @@ async function onRegister() {
 }
 
 .brand-icon {
-  font-size: 18px;
+  font-size: 28px;
+  animation: float 3s ease-in-out infinite;
 }
+
 .title {
   margin: 0;
   text-align: left;
   font-size: 1.5rem;
+  font-weight: 600;
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+:deep(.login-btn) {
+  background: var(--gradient-brand) !important;
+  border: none !important;
+  height: 40px;
+  font-size: 15px;
   font-weight: 500;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+:deep(.login-btn:hover) {
+  opacity: 0.92;
+  transform: translateY(-1px);
+}
+
+:deep(.login-btn:active) {
+  transform: translateY(0);
 }
 </style>

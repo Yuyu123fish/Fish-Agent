@@ -149,9 +149,18 @@ function goChat() {
 .kb-page {
   max-width: 960px;
   margin: 0 auto;
-  padding: 16px 20px 32px;
+  padding: 0 20px 32px;
   min-height: 100vh;
-  background: var(--bg-page, #f9fafb);
+  background: var(--bg-page);
+}
+
+.kb-page::before {
+  content: '';
+  display: block;
+  height: 120px;
+  background: var(--gradient-brand);
+  border-radius: 0 0 var(--radius-xl) var(--radius-xl);
+  margin: 0 -20px 0;
 }
 
 .kb-header {
@@ -159,6 +168,17 @@ function goChat() {
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+  margin-top: -80px;
+  position: relative;
+}
+
+.kb-header :deep(.el-button) {
+  color: #fff;
+}
+
+.kb-header :deep(.el-button.is-circle) {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
 }
 
 .kb-title {
@@ -166,14 +186,16 @@ function goChat() {
   margin: 0;
   font-size: 1.25rem;
   font-weight: 600;
+  color: #fff;
 }
 
 .kb-upload {
-  background: var(--bg-main, #fff);
-  border-radius: 8px;
-  padding: 12px 16px;
-  margin-bottom: 12px;
+  background: var(--bg-main);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  margin-bottom: 16px;
   border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
 }
 
 .hint {
@@ -187,13 +209,18 @@ function goChat() {
 }
 
 .kb-table {
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
+  border: 1px solid var(--border);
 }
 
 .kb-pager {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+:deep(.el-tag--warning) {
+  animation: pulse 1.5s ease-in-out infinite;
 }
 </style>

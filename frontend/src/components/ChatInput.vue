@@ -41,31 +41,33 @@ watch(activeSid, () => focusInput())
 
 <template>
   <div class="bar">
-    <el-input
-      ref="iptRef"
-      v-model="text"
-      type="textarea"
-      :autosize="{ minRows: 1, maxRows: 6 }"
-      placeholder="输入问题，Enter 发送 · Shift+Enter 换行"
-      resize="none"
-      class="ipt"
-      @keydown="onKeydown"
-    />
-    <el-button
-      v-if="!streaming"
-      type="primary"
-      :icon="Promotion"
-      circle
-      :disabled="!text.trim()"
-      @click="submit"
-    />
-    <el-button
-      v-else
-      type="danger"
-      :icon="CircleClose"
-      circle
-      @click="store.cancel"
-    />
+    <div class="ipt-wrap">
+      <el-input
+        ref="iptRef"
+        v-model="text"
+        type="textarea"
+        :autosize="{ minRows: 1, maxRows: 6 }"
+        placeholder="输入问题，Enter 发送 · Shift+Enter 换行"
+        resize="none"
+        class="ipt"
+        @keydown="onKeydown"
+      />
+      <el-button
+        v-if="!streaming"
+        type="primary"
+        :icon="Promotion"
+        circle
+        :disabled="!text.trim()"
+        @click="submit"
+      />
+      <el-button
+        v-else
+        type="danger"
+        :icon="CircleClose"
+        circle
+        @click="store.cancel"
+      />
+    </div>
   </div>
 </template>
 
@@ -73,11 +75,40 @@ watch(activeSid, () => focusInput())
 .bar {
   display: flex;
   align-items: flex-end;
-  gap: 12px;
-  padding: 12px 24px 18px;
+  gap: 0;
+  padding: 12px 24px 20px;
+  max-width: 800px;
+  width: 100%;
+  margin: 0 auto;
+  background: transparent;
+  border-top: none;
+  box-shadow: none;
+}
+
+.ipt-wrap {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  width: 100%;
   background: var(--bg-main);
-  border-top: 1px solid var(--border);
-  box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.04);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  padding: 6px 6px 6px 16px;
+  box-shadow: var(--shadow-md);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
+}
+
+.ipt-wrap:focus-within {
+  border-color: var(--primary);
+  box-shadow: var(--shadow-md), 0 0 0 3px rgba(79, 70, 229, 0.1);
+}
+
+[data-theme='dark'] .ipt-wrap {
+  box-shadow: var(--shadow-md), 0 -2px 20px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='dark'] .ipt-wrap:focus-within {
+  box-shadow: var(--shadow-md), 0 0 0 3px rgba(99, 102, 241, 0.15);
 }
 
 .ipt {
@@ -85,29 +116,37 @@ watch(activeSid, () => focusInput())
 }
 
 :deep(.el-textarea__inner) {
-  border-radius: 8px;
-  padding: 10px 14px;
+  border: none !important;
+  padding: 8px 0;
   font-size: 14px;
   line-height: 1.6;
-  background: var(--bg-main);
+  background: transparent;
   color: var(--text);
-  border-color: var(--border);
-}
-
-:deep(.el-textarea__inner:focus) {
-  border-color: var(--primary);
+  box-shadow: none !important;
 }
 
 :deep(.el-textarea__inner::placeholder) {
   color: var(--text-secondary);
 }
 
-[data-theme='dark'] .bar {
-  box-shadow: 0 -6px 28px rgba(0, 0, 0, 0.45);
+:deep(.el-button--primary.is-circle) {
+  background: var(--gradient-brand);
+  border: none;
+  width: 36px;
+  height: 36px;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+}
+
+:deep(.el-button--primary.is-circle:hover) {
+  opacity: 0.9;
+  transform: scale(1.05);
 }
 
 :deep(.el-button--primary.is-circle:active) {
-  transform: scale(0.92);
-  transition: transform 0.1s ease;
+  transform: scale(0.95);
+}
+
+:deep(.el-button--danger.is-circle) {
+  animation: pulse 1.5s ease-in-out infinite;
 }
 </style>

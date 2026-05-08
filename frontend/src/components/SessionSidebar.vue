@@ -110,7 +110,8 @@ function goKnowledge() {
           title="切换明 / 暗主题"
           @click="toggle"
         />
-        <span class="title">🐟 Fish Agent</span>
+        <span class="brand-emoji">🐟</span>
+        <span class="title">Fish Agent</span>
       </div>
       <div class="header-user-top">
         <span class="user-nickname" :title="nickname?.trim() || undefined">{{ displayNickname }}</span>
@@ -213,6 +214,10 @@ function goKnowledge() {
   row-gap: 10px;
   padding: 14px 16px 16px;
   border-bottom: 1px solid var(--border);
+  background-image: linear-gradient(to right, transparent, var(--primary), transparent);
+  background-size: 60% 1px;
+  background-position: bottom;
+  background-repeat: no-repeat;
 }
 
 .brand-line {
@@ -226,13 +231,27 @@ function goKnowledge() {
 
 .theme-toggle {
   flex-shrink: 0;
+  transition: transform var(--transition-normal);
+}
+
+.theme-toggle:hover {
+  transform: rotate(30deg);
+}
+
+.brand-emoji {
+  font-size: 16px;
+  line-height: 1;
 }
 
 .title {
-  font-weight: 500;
+  font-weight: 600;
   font-size: 16px;
   line-height: 1.25;
   flex-shrink: 0;
+  background: var(--gradient-brand);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .header-user-top {
@@ -311,11 +330,12 @@ function goKnowledge() {
   align-items: center;
   gap: 10px;
   padding: 10px 12px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition:
-    background 0.15s ease,
-    transform 0.15s ease;
+    background var(--transition-fast),
+    transform var(--transition-fast),
+    box-shadow var(--transition-fast);
 }
 
 .item:hover:not(.disabled) {
@@ -325,7 +345,7 @@ function goKnowledge() {
 
 .item.active {
   background: var(--bg-active);
-  box-shadow: inset 2px 0 0 var(--primary);
+  box-shadow: inset 3px 0 0 var(--primary);
 }
 
 .item.disabled {
@@ -369,7 +389,14 @@ function goKnowledge() {
   text-align: center;
   color: var(--text-secondary);
   font-size: 13px;
-  padding: 24px 0;
+  padding: 32px 0;
+}
+
+.empty::before {
+  content: '💬';
+  display: block;
+  font-size: 32px;
+  margin-bottom: 8px;
 }
 
 .footer {

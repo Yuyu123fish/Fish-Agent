@@ -23,7 +23,8 @@ const renderer = new marked.Renderer()
 renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
   const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext'
   const out = hljs.highlight(text, { language }).value
-  return `<pre><code class="hljs language-${language}">${out}</code></pre>`
+  const label = language !== 'plaintext' ? language : ''
+  return `<div class="code-block"><div class="code-header"><span class="code-lang">${label}</span></div><pre><code class="hljs language-${language}">${out}</code></pre></div>`
 }
 
 const isUser = computed(() => props.msg.role === 'user')
@@ -123,7 +124,8 @@ async function copy() {
 <style scoped>
 .row {
   display: flex;
-  margin: 8px 0;
+  margin: 10px 0;
+  animation: bubble-in 0.25s ease-out;
 }
 
 .row.user {
@@ -134,35 +136,63 @@ async function copy() {
   position: relative;
   max-width: 75%;
   padding: 10px 14px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   word-break: break-word;
 }
 
 .bubble.user {
-  background: var(--bubble-user);
+  background: var(--gradient-brand);
   color: var(--bubble-user-text);
-  border-bottom-right-radius: 4px;
+  border-radius: var(--radius-md);
   box-shadow: 0 2px 8px rgba(79, 70, 229, 0.22);
+  border-bottom-right-radius: 4px;
 }
 
 [data-theme='dark'] .bubble.user {
-  box-shadow: 0 2px 12px rgba(99, 102, 241, 0.32);
+  box-shadow: 0 3px 16px rgba(99, 102, 241, 0.35);
 }
 
 .bubble.assistant {
   background: var(--bubble-assistant);
-  border: 1px solid var(--border);
+  border: none;
   color: var(--bubble-assistant-text);
+  border-radius: var(--radius-md);
   border-bottom-left-radius: 4px;
+  box-shadow: var(--shadow-sm);
 }
 
 .bubble.tool {
   background: var(--bg-hover);
   border: 1px solid var(--border);
+  border-radius: var(--radius-md);
   color: var(--text-primary);
   font-size: 13px;
   max-width: 90%;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+:deep(.code-block) {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  margin: 8px 0;
+  background: #1a1a2e;
+}
+
+:deep(.code-header) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 14px;
+  background: rgba(255, 255, 255, 0.06);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+:deep(.code-lang) {
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .tool-head {
@@ -236,12 +266,14 @@ async function copy() {
 .markdown-body.streaming::after {
   content: '';
   display: inline-block;
-  width: 6px;
-  height: 14px;
+  width: 3px;
+  height: 16px;
   margin-left: 2px;
   vertical-align: -2px;
   background: var(--primary);
+  border-radius: 2px;
   animation: caret 1s steps(2, start) infinite;
+  opacity: 0.8;
 }
 @keyframes caret {
   to {
