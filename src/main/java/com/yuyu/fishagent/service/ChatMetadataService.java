@@ -149,6 +149,26 @@ public class ChatMetadataService {
                 .eq(ChatMetadata::getUserId, userId));
     }
 
+    /**
+     * 重命名当前用户拥有的会话标题。
+     *
+     * @param sessionId 会话 ID
+     * @param newTitle  新标题（经 {@link #trimTitle} 截断与清洗）
+     */
+    @Transactional(rollbackFor = Exception.class)
+    public void renameTitle(String sessionId, String newTitle) {
+        Long userId = requireUserId();
+        ChatMetadata row = chatMetadataMapper.selectOne(Wrappers.<ChatMetadata>lambdaQuery()
+                .eq(ChatMetadata::getSessionId, sessionId)
+                .eq(ChatMetadata::getUserId, userId));
+        if (row == null) {
+            throw new IllegalArgumentException("session not found or access denied");
+        }
+        row.setTitle(trimTitle(newTitle));
+        row.setUpdatedAt(LocalDateTime.now());
+        chatMetadataMapper.updateById(row);
+    }
+
     private static Long requireUserId() {
         Long uid = UserContextHolder.currentUserIdOrNull();
         if (uid == null) {

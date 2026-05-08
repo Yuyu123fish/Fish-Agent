@@ -4,6 +4,7 @@ import {
   deleteSession as apiDeleteSession,
   getHistory,
   listSessions,
+  renameSession,
   streamChat
 } from '@/api/chat'
 import type { ChatMessage, SessionInfo } from '@/types/chat'
@@ -63,6 +64,15 @@ export const useChatStore = defineStore('chat', () => {
       await refreshSessions()
     } catch (e: any) {
       errorMsg.value = e?.message ?? '删除失败'
+    }
+  }
+
+  async function rename(sid: string, title: string): Promise<void> {
+    try {
+      await renameSession(sid, title)
+      await refreshSessions()
+    } catch (e: any) {
+      errorMsg.value = e?.message ?? '重命名失败'
     }
   }
 
@@ -186,6 +196,14 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = false
   }
 
+  /** 组件卸载时调用：仅释放网络资源，不修改 UI 状态 */
+  function cleanup(): void {
+    if (abortController) {
+      abortController.abort()
+      abortController = null
+    }
+  }
+
   return {
     sessions,
     activeSid,
@@ -197,7 +215,9 @@ export const useChatStore = defineStore('chat', () => {
     selectSession,
     newSession,
     deleteSession,
+    rename,
     send,
-    cancel
+    cancel,
+    cleanup
   }
 })

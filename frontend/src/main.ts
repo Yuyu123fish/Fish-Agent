@@ -21,4 +21,7 @@ const app = createApp(App)
 app.use(createPinia())
 app.use(router)
 app.use(ElementPlus)
+app.config.errorHandler = (err, instance, info) => {
+  console.error('[FishAgent] 全局异常:', err, info)
+}
 app.mount('#app')

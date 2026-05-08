@@ -49,7 +49,18 @@ const toolPayload = computed(() => {
   }
 })
 
-const toolExpanded = ref(true)
+const toolExpanded = ref(false)
+
+const friendlyToolName = computed(() => {
+  const name = props.msg.toolName || 'unknown'
+  const map: Record<string, string> = {
+    knowledge_search: '知识库检索',
+    web_search: '网页搜索',
+    code_interpreter: '代码执行',
+    memory_search: '记忆检索'
+  }
+  return map[name] || name
+})
 
 /** 是否给 assistant 气泡末尾追加流式光标。仅当：是最后一条 && 正在流 && 是 assistant。 */
 const showCursor = computed(
@@ -75,15 +86,21 @@ async function copy() {
     <div class="bubble" :class="{ user: isUser, tool: isTool, assistant: isAssistant }">
       <!-- 工具气泡 -->
       <template v-if="isTool">
-        <div class="tool-head" @click="toolExpanded = !toolExpanded">
-          <el-icon><Tools /></el-icon>
-          <span>调用工具：{{ msg.toolName || 'unknown' }}</span>
-          <el-icon class="caret">
-            <ArrowDown v-if="toolExpanded" />
-            <ArrowUp v-else />
-          </el-icon>
+        <div class="tool-card">
+          <div class="tool-badge">
+            <el-icon class="tool-icon"><Tools /></el-icon>
+          </div>
+          <div class="tool-body">
+            <div class="tool-title" @click="toolExpanded = !toolExpanded">
+              <span class="tool-name">{{ friendlyToolName }}</span>
+              <el-icon class="caret">
+                <ArrowDown v-if="toolExpanded" />
+                <ArrowUp v-else />
+              </el-icon>
+            </div>
+            <div v-if="toolExpanded && toolPayload" class="tool-payload">{{ toolPayload }}</div>
+          </div>
         </div>
-        <pre v-if="toolExpanded && toolPayload" class="tool-payload">{{ toolPayload }}</pre>
       </template>
 
       <!-- 用户气泡 -->
@@ -162,13 +179,13 @@ async function copy() {
 }
 
 .bubble.tool {
-  background: var(--bg-hover);
+  background: var(--bg-main);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-primary);
-  font-size: 13px;
-  max-width: 90%;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  max-width: 85%;
+  padding: 12px 14px;
+  box-shadow: var(--shadow-sm);
 }
 
 :deep(.code-block) {
@@ -195,32 +212,70 @@ async function copy() {
   letter-spacing: 0.5px;
 }
 
-.tool-head {
+.tool-card {
+  display: flex;
+  gap: 10px;
+  width: 100%;
+}
+
+.tool-badge {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(124, 58, 237, 0.08));
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+[data-theme='dark'] .tool-badge {
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.15));
+}
+
+.tool-badge .tool-icon {
+  font-size: 14px;
+  color: var(--primary);
+}
+
+.tool-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-title {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-weight: 600;
-  margin-bottom: 4px;
   cursor: pointer;
   user-select: none;
 }
 
-.tool-head .caret {
+.tool-name {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.tool-title .caret {
   margin-left: auto;
   font-size: 12px;
+  color: var(--text-secondary);
 }
 
 .tool-payload {
-  margin: 6px 0 0;
+  margin-top: 8px;
   padding: 8px 10px;
   background: var(--copy-btn-bg);
   border-radius: 6px;
-  font-size: 12.5px;
+  border-left: 2px solid var(--primary);
+  font-size: 12px;
   line-height: 1.55;
-  max-height: 320px;
+  max-height: 240px;
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+  color: var(--text-secondary);
 }
 
 .plain {

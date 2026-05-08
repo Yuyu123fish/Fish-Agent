@@ -1,7 +1,15 @@
 <script setup lang="ts">
+import { onUnmounted } from 'vue'
+import { useChatStore } from '@/store/chat'
 import SessionSidebar from '@/components/SessionSidebar.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
+
+const store = useChatStore()
+
+onUnmounted(() => {
+  store.cleanup()
+})
 </script>
 
 <template>

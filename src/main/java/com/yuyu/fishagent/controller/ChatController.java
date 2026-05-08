@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * 聊天 REST 接口。
@@ -19,7 +20,8 @@ import java.util.List;
  *   <li>{@code POST /api/chat/stream}：流式对话（SSE）；</li>
  *   <li>{@code GET /api/chat/sessions}：列出全部会话摘要；</li>
  *   <li>{@code GET /api/chat/sessions/{sid}}：取某会话历史；</li>
- *   <li>{@code DELETE /api/chat/sessions/{sid}}：删除会话。</li>
+ *   <li>{@code DELETE /api/chat/sessions/{sid}}：删除会话；</li>
+ *   <li>{@code PATCH /api/chat/sessions/{sid}}：重命名会话标题。</li>
  * </ul>
  */
 @Slf4j
@@ -77,5 +79,18 @@ public class ChatController {
     @DeleteMapping("/sessions/{sessionId}")
     public void deleteSession(@PathVariable String sessionId) {
         chatService.deleteSession(sessionId);
+    }
+
+    /**
+     * 重命名会话标题
+     */
+    @PatchMapping("/sessions/{sessionId}")
+    public void renameSession(@PathVariable String sessionId,
+                              @RequestBody Map<String, String> body) {
+        String title = body.get("title");
+        if (title == null || title.isBlank()) {
+            throw new IllegalArgumentException("title must not be empty");
+        }
+        chatService.renameTitle(sessionId, title);
     }
 }

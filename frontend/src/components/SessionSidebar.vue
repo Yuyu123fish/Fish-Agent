@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { onMounted, computed, ref } from 'vue'
+import { onMounted, computed, ref, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
 import {
   Plus,
   ChatLineRound,
   Delete,
+  Edit,
+  Close,
   Loading,
   SwitchButton,
   Collection,
@@ -12,18 +14,24 @@ import {
   Sunny
 } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
+import { ElMessageBox } from 'element-plus'
 import { useChatStore } from '@/store/chat'
 import { useAuthStore } from '@/store/auth'
 import * as authApi from '@/api/auth'
 import { formatRelativeTime } from '@/utils/time'
 import KnowledgeUpload from '@/components/KnowledgeUpload.vue'
 import { useTheme } from '@/composables/useTheme'
+import type { SessionInfo } from '@/types/chat'
 
 const router = useRouter()
 const { dark, toggle } = useTheme()
 const auth = useAuthStore()
 const store = useChatStore()
 const { sessions, activeSid, streaming } = storeToRefs(store)
+
+const editingSid = ref<string | null>(null)
+const editTitle = ref('')
+const editInput = ref<HTMLInputElement | null>(null)
 const { nickname } = storeToRefs(auth)
 
 /** 有 token 但尚未从 /me 拿到昵称前为 true（本地已有昵称时不显示省略号） */
@@ -69,10 +77,53 @@ function handleNew() {
   store.newSession()
 }
 
-function handleDelete(sid: string, e: Event) {
+async function handleDelete(sid: string, e: Event) {
   e.stopPropagation()
   if (streaming.value) return
-  store.deleteSession(sid)
+  try {
+    await ElMessageBox.confirm('确定删除此会话？删除后不可恢复。', '删除确认', {
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+      type: 'warning'
+    })
+    store.deleteSession(sid)
+  } catch {
+    // 用户取消
+  }
+}
+
+function startRename(s: SessionInfo) {
+  if (streaming.value) return
+  editingSid.value = s.sessionId
+  editTitle.value = s.title || ''
+  void nextTick(() => editInput.value?.focus())
+}
+
+async function confirmRename(sid: string) {
+  const t = editTitle.value.trim()
+  if (!t) {
+    cancelRename()
+    return
+  }
+  const prev = sessions.value.find((x) => x.sessionId === sid)?.title || ''
+  if (t === prev) {
+    editingSid.value = null
+    return
+  }
+  await store.rename(sid, t)
+  editingSid.value = null
+}
+
+function cancelRename() {
+  editingSid.value = null
+  editTitle.value = ''
+}
+
+/** 仅当该会话仍处于编辑态时取消，防止切换编辑目标时旧 blur 冲突 */
+function handleEditBlur(sid: string) {
+  if (editingSid.value === sid) {
+    cancelRename()
+  }
 }
 
 /**
@@ -160,7 +211,7 @@ function goKnowledge() {
         v-for="s in sessions"
         :key="s.sessionId"
         class="item"
-        :class="{ active: s.sessionId === activeSid, disabled: streaming }"
+        :class="{ active: s.sessionId === activeSid, disabled: streaming, editing: editingSid === s.sessionId }"
         @click="handleSelect(s.sessionId)"
       >
         <el-icon class="icon">
@@ -168,9 +219,29 @@ function goKnowledge() {
           <ChatLineRound v-else />
         </el-icon>
         <div class="meta">
-          <div class="name">{{ s.title || '新会话' }}</div>
+          <input
+            v-if="editingSid === s.sessionId"
+            ref="editInput"
+            v-model="editTitle"
+            class="name-edit"
+            @click.stop
+            @dblclick.stop
+            @blur="handleEditBlur(s.sessionId)"
+            @keydown.enter.prevent="confirmRename(s.sessionId)"
+            @keyup.escape="cancelRename"
+          />
+          <div v-else class="name">{{ s.title || '新会话' }}</div>
           <div class="sub">{{ s.messageCount }} 条 · {{ formatRelativeTime(s.updatedAt) }}</div>
         </div>
+        <el-button
+          v-if="!streaming"
+          link
+          :icon="editingSid === s.sessionId ? Close : Edit"
+          class="edit-btn"
+          :title="editingSid === s.sessionId ? '取消' : '重命名'"
+          @click.stop="editingSid === s.sessionId ? cancelRename() : startRename(s)"
+          @mousedown.prevent
+        />
         <el-button
           link
           :icon="Delete"
@@ -369,6 +440,27 @@ function goKnowledge() {
   text-overflow: ellipsis;
 }
 
+.name-edit {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font-size: 13.5px;
+  font-family: inherit;
+  font-weight: 500;
+  color: var(--text-primary);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
+  padding: 0 0 1px;
+  margin: 0;
+  outline: none;
+}
+
+.name-edit:focus {
+  border-bottom-color: var(--primary);
+}
+
 .item .sub {
   font-size: 11.5px;
   color: var(--text-secondary);
@@ -382,6 +474,18 @@ function goKnowledge() {
 }
 
 .item:hover .del {
+  opacity: 1;
+}
+
+.edit-btn {
+  opacity: 0;
+  color: var(--text-secondary);
+  transition: opacity 0.12s;
+}
+.item:hover .edit-btn {
+  opacity: 1;
+}
+.item.editing .edit-btn {
   opacity: 1;
 }
 

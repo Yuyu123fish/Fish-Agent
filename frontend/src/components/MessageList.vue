@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { storeToRefs } from 'pinia'
 import { ArrowDown } from '@element-plus/icons-vue'
 import { useChatStore } from '@/store/chat'
@@ -7,6 +7,15 @@ import MessageBubble from './MessageBubble.vue'
 
 const store = useChatStore()
 const { messages, errorMsg, streaming } = storeToRefs(store)
+const RENDER_BATCH = 30
+const renderCount = ref(RENDER_BATCH)
+
+const visibleMessages = computed(() => {
+  if (messages.value.length <= renderCount.value) return messages.value
+  return messages.value.slice(-renderCount.value)
+})
+
+const hasMore = computed(() => renderCount.value < messages.value.length)
 
 const suggestions = [
   '帮我写一段 Python 爬虫',
@@ -53,12 +62,27 @@ function jumpToBottom(): void {
   scrollToBottom(true)
 }
 
-watch(messages, () => scrollToBottom(false), { deep: true, immediate: true })
+function loadMore(): void {
+  renderCount.value = Math.min(renderCount.value + RENDER_BATCH, messages.value.length)
+}
+
+watch(
+  messages,
+  (curr, prev) => {
+    const newMsgCount = curr.length - (prev?.length ?? 0)
+    if (newMsgCount > 0) {
+      renderCount.value = Math.min(renderCount.value + newMsgCount, curr.length)
+    }
+    scrollToBottom(false)
+  },
+  { deep: true, immediate: true }
+)
 
 // 切换会话时强制滚到底
 watch(
   () => store.activeSid,
   () => {
+    renderCount.value = RENDER_BATCH
     stickToBottom.value = true
     scrollToBottom(true)
   }
@@ -72,6 +96,10 @@ onMounted(() => {
 <template>
   <div class="wrap" ref="scroller" @scroll="updateStick">
     <div class="messages-center">
+      <button v-if="hasMore" class="load-more" type="button" @click="loadMore">
+        加载更早消息（剩余 {{ messages.length - renderCount }} 条）
+      </button>
+
       <div v-if="messages.length === 0" class="welcome">
         <div class="welcome-glow"></div>
         <div class="logo">🐟</div>
@@ -92,10 +120,10 @@ onMounted(() => {
       </div>
 
       <MessageBubble
-        v-for="(m, i) in messages"
-        :key="i"
+        v-for="(m, i) in visibleMessages"
+        :key="messages.length - visibleMessages.length + i"
         :msg="m"
-        :is-last="i === messages.length - 1"
+        :is-last="i === visibleMessages.length - 1"
         :streaming="streaming"
       />
 
@@ -137,6 +165,25 @@ onMounted(() => {
   max-width: 800px;
   width: 100%;
   margin: 0 auto;
+}
+
+.load-more {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-bottom: 8px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+.load-more:hover {
+  color: var(--primary);
+  border-color: var(--primary);
 }
 
 .welcome {

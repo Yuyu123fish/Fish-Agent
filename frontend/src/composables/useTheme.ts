@@ -13,6 +13,15 @@ function readInitialDark(): boolean {
 
 const dark = ref(readInitialDark())
 
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', (e) => {
+    if (e.key === STORAGE_KEY && e.newValue) {
+      const isDark = e.newValue === 'dark'
+      if (isDark !== dark.value) applyTheme(isDark)
+    }
+  })
+}
+
 /**
  * 自定义 data-theme 与 Element Plus .dark 必须同步，否则会出现半黑半白。
  */

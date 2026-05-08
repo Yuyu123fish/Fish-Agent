@@ -80,6 +80,8 @@ public class ChatService {
     private final MemoryProperties memoryProperties;
     /** SSE 并发计数递减（与 {@link com.yuyu.fishagent.auth.interceptor.RateLimitInterceptor} 的 INCR 对称）。 */
     private final RateLimitService rateLimitService;
+    /** 会话元数据（MySQL）：侧栏标题等。 */
+    private final ChatMetadataService chatMetadataService;
 
     /**
      * 列出所有已持久化的会话。
@@ -107,6 +109,16 @@ public class ChatService {
      */
     public void deleteSession(String sessionId) {
         memoryStore.clear(sessionId);
+    }
+
+    /**
+     * 重命名会话标题（元数据层）。
+     *
+     * @param sessionId 会话 ID
+     * @param newTitle  新标题
+     */
+    public void renameTitle(String sessionId, String newTitle) {
+        chatMetadataService.renameTitle(sessionId, newTitle);
     }
 
     /**
@@ -195,6 +207,7 @@ public class ChatService {
 
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
+        //调用大模型流式推理
         disposableRef[0] = chatAgent.stream(messages, sid).subscribe(
                 node -> handleNode(node, emitter, assistantBuf),
                 err -> {
@@ -207,7 +220,12 @@ public class ChatService {
                         UserContextHolder.set(streamUserSnapshot);
                     }
                     try {
-                        persist(sid, userInput, full);
+                        try {
+                            persist(sid, userInput, full);
+                        } catch (Exception e) {
+                            log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
+                            // persist 失败不阻塞 emitter 关闭
+                        }
                         safeSend(emitter, "done", full);
                         emitter.complete();
                         triggerLongTermMemoryIngestion(streamUserId, sid, userInput);

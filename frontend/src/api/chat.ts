@@ -104,7 +104,18 @@ export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Pr
 
   if (!resp.ok || !resp.body) {
     const text = await safeText(resp)
-    handlers.onError?.(`HTTP ${resp.status}：${text || resp.statusText}`)
+    if (resp.status === 409) {
+      try {
+        const body = JSON.parse(text) as { code?: string; message?: string }
+        if (body.code === 'SESSION_LOCKED') {
+          handlers.onError?.(body.message || '该会话正在生成中，请稍后再试')
+          return
+        }
+      } catch {
+        /* fallback */
+      }
+    }
+    handlers.onError?.(`请求失败 (${resp.status})`)
     return
   }
 
@@ -179,4 +190,13 @@ export async function deleteSession(sessionId: string): Promise<void> {
     method: 'DELETE'
   })
   if (!r.ok) throw new Error(`删除会话失败 HTTP ${r.status}`)
+}
+
+export async function renameSession(sessionId: string, title: string): Promise<void> {
+  const r = await authFetch(`/api/chat/sessions/${encodeURIComponent(sessionId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title })
+  })
+  if (!r.ok) throw new Error(`重命名失败 HTTP ${r.status}`)
 }
