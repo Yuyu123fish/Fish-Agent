@@ -66,7 +66,7 @@ flowchart LR
 
 ### 分层记忆：Redis 短期 + ES 长期 + RAG 检索
 
-分层依据是访问模式而非数据类型：短期记忆（Redis ZSET 滑动窗口 + LLM 摘要）在每轮对话开始时**同步**加载，延迟直接影响首字等待，必须是 Redis 微秒级；长期事实（ES `dense_vector`）跨会话累积，检索时**异步**注入，需要全文 + 向量双路查询能力。短期压缩与长期录入两条链路职责不交叉——压缩「只写 Redis」、录入「只写 ES」。`LongTermMemoryFactSanitizer` 在写入前过滤误抽取，保证向量索引信噪比。
+分层依据是访问模式而非数据类型：短期记忆（Redis String JSON 消息窗口 + LLM 摘要）在每轮对话开始时**同步**加载，延迟直接影响首字等待，必须是 Redis 微秒级；长期事实（ES `dense_vector`）跨会话累积，检索时**异步**注入，需要全文 + 向量双路查询能力。短期压缩与长期录入两条链路职责不交叉——压缩「只写 Redis」、录入「只写 ES」。`LongTermMemoryFactSanitizer` 在写入前过滤误抽取，保证向量索引信噪比。
 
 ```mermaid
 sequenceDiagram
@@ -88,7 +88,7 @@ sequenceDiagram
     CS->>CS: ReAct 对话（主模型）
 
     Note over CS: 对话结束 → 异步任务
-    CS->>STS: 追加消息到 ZSET 滑动窗口
+    CS->>STS: 追加消息到 Redis 消息窗口
     CS->>Ingest: 异步抽取长期事实
     Ingest->>LLM: Prompt：判断是否存在稳定事实
     LLM-->>Ingest: JSON 事实列表
@@ -121,17 +121,17 @@ sequenceDiagram
     participant ES as Elasticsearch
 
     U->>FE: 选择文件
-    alt 文件 ≤ 1MB
+    alt 文件 ≤ 1MB（直传）
         FE->>BE: POST /api/knowledge/upload
-    else 文件 > 1MB
+        BE->>RustFS: putObject（流式）
+    else 文件 > 1MB（分片）
         FE->>BE: POST /api/knowledge/upload/init
         loop 每个 5MB 分片
             FE->>BE: POST /api/knowledge/upload/chunk
         end
         FE->>BE: POST /api/knowledge/upload/complete
-        BE->>RustFS: composeObject（合并）
+        BE->>RustFS: composeObject（合并分片）
     end
-    BE->>RustFS: putObject
     BE->>MySQL: INSERT (status=PENDING)
     BE->>Stream: XADD fish:doc:ingest
     BE-->>FE: { taskId }
@@ -327,7 +327,7 @@ Fish-Agent/
 ├── src/main/java/com/yuyu/fishagent/
 │   ├── agent/                   ReAct Agent 核心（循环 + 工具编排 + 状态机）
 │   │   ├── memory/
-│   │   │   ├── shortterm/       Redis ZSET 短期记忆
+│   │   │   ├── shortterm/       Redis String 短期记忆
 │   │   │   ├── longterm/        ES 长期事实抽取
 │   │   │   ├── compress/        LLM 记忆压缩
 │   │   │   └── rag/             查询重写 → 多查询扩展 → 三路并发召回
