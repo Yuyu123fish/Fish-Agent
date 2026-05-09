@@ -17,7 +17,7 @@ flowchart TB
     subgraph Agent["Agent 核心"]
         CA["ChatAgent.stream()"]
         BA["BaseAgent.buildReactAgent()"]
-        Status["AgentStatus 状态机<br/>IDLE → RUNNING → FINISHED / ERROR"]
+        Status["AgentStatus 状态机<br/>IDLE → RUNNING → FINISHED / ERROR / MAX_ITER_REACHED"]
     end
 
     subgraph ReAct["ReAct 主循环"]

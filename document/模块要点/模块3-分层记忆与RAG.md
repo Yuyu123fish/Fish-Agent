@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-**短期记忆（Redis ZSET）→ 压缩摘要（LLM）→ 长期事实（ES）→ RAG 召回注入**四层流水线，配合 **三索引 × 双路（文本 + 向量）并发检索**，在**虚拟线程**下保证 ThreadLocal 隔离，实现跨会话的知识复用。
+**短期记忆（Redis String JSON）→ 压缩摘要（LLM）→ 长期事实（ES）→ RAG 召回注入**四层流水线，配合 **三索引 × 双路（文本 + 向量）并发检索**，在**虚拟线程**下保证 ThreadLocal 隔离，实现跨会话的知识复用。
 
 ---
 
@@ -15,8 +15,8 @@ flowchart TB
     end
 
     subgraph STM["短期记忆层（Redis）"]
-        ZSET["ZSET 消息窗口<br/>fish:memory:short:{sid}:messages"]
-        Summary["摘要文本<br/>fish:memory:short:{sid}:summary"]
+        MSG["String JSON 消息窗口<br/>fish:memory:short:{sid}:messages"]
+        Summary["String 摘要文本<br/>fish:memory:short:{sid}:summary"]
     end
 
     subgraph Compress["记忆压缩（LLM）"]
@@ -72,7 +72,7 @@ sequenceDiagram
     
     Note over CS: 对话结束 → 异步任务
     
-    CS->>STS: 追加 user + assistant 消息到 ZSET
+    CS->>STS: 追加 user + assistant 消息到 Redis
     CS->>Ingest: triggerLongTermMemoryIngestion(userId, sid, userInput)
     Ingest->>LLM: Prompt：判断是否存在稳定事实
     LLM-->>Ingest: JSON 事实列表
@@ -80,7 +80,7 @@ sequenceDiagram
     CS->>Compress: triggerMemoryCompressionIfNeeded（≥30 条）
     Compress->>LLM: Prompt：压缩历史生成摘要
     LLM-->>Compress: JSON 摘要
-    Compress->>STS: 写入 summary + 滑动窗口
+    Compress->>STS: 写入 summary + messages
 ```
 
 ---
@@ -130,12 +130,12 @@ flowchart LR
 
 ## 关键位置
 
-### 1. 短期记忆：Redis ZSET 滑动窗口
+### 1. 短期记忆：Redis String 消息窗口
 
 `[RedisShortTermMemoryStore.java](src/main/java/com/yuyu/fishagent/agent/memory/shortterm/RedisShortTermMemoryStore.java)`：
 
 - **summary key**：`fish:memory:short:{sessionId}:summary`（String）
-- **messages key**：`fish:memory:short:{sessionId}:messages`（ZSET，score 为时间戳，保留最近 N 条）
+- **messages key**：`fish:memory:short:{sessionId}:messages`（String，JSON 序列化消息列表）
 - TTL：`short-term-ttl-days`（默认 30 天），summary 和 messages 共用
 - 加载快照时同时返回摘要 + 窗口消息，供 `buildMessages` 使用
 
@@ -177,7 +177,7 @@ flowchart LR
 
 ### 我们选了什么
 
-- **短期存储**：Redis ZSET（消息窗口）+ String（摘要），30 天 TTL
+- **短期存储**：Redis String（消息窗口 JSON + 摘要文本），30 天 TTL
 - **长期存储**：ES `fish-user-memory`（对话事实，`source_type=chat`）
 - **记忆压缩**：LLM 异步压缩历史为摘要 JSON，触发阈值 30 条消息
 - **RAG 检索**：三索引（用户记忆 / 用户文档 / 公共知识）× 双路（文本 `match` + 向量 `knn`），虚拟线程并发
@@ -217,7 +217,7 @@ flowchart LR
     → CompletableFuture.runAsync()
     → MemoryCompressionService.compress(request)
     → LLM 调用（memoryChatModel）："请将以下对话压缩为摘要 JSON"
-    → 解析 JSON → 写入 Redis summary + ZSET 窗口
+    → 解析 JSON → 写入 Redis summary + messages
 ```
 
 **压缩的触发策略**：30 条是阈值，不是每轮都压。前 29 条消息不做任何处理——直接用全量历史。第 30 条触发首次压缩 → 生成摘要 → 后续每轮到 30 条时再压缩。压缩后的 summary 长度通常在 500-1000 字符，远小于原始 30 条消息。
