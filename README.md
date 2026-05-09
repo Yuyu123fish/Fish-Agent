@@ -1,6 +1,6 @@
 # Fish-Agent
 
-基于 **Spring AI Alibaba ReAct** 的全栈智能体应用。具备分层记忆、三路 RAG 检索、知识库闭环、流式对话与多维限流能力。Java + Python + Vue 3 全栈架构。
+基于 **Spring AI Alibaba ReAct** 的全栈智能体应用。具备分层记忆、三路 RAG 检索、知识库闭环、流式对话与多维限流能力等。Java + Python + Vue 3 全栈架构。
 
 > **Vibecoding 项目**：从最初的需求分析与架构选型由人工完成，后续所有代码编写、代码审查、Bug 修复均由 AI 驱动。这也是对「AI 辅助全栈开发」的一次实战验证。
 
