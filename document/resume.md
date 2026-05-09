@@ -27,7 +27,7 @@
 - Chat 与 Embedding 完全解耦，可自由组合（如 Chat 用 DeepSeek、Embedding 用 DashScope）；独立 `memoryChatModel` Bean 支持记忆压缩与事实抽取使用更低 temperature 的专用模型
 
 ### 分层记忆体系
-- 三层记忆按访问模式分层：Redis ZSET 滑动窗口（短期，同步加载，微秒级）+ ES `dense_vector` 向量索引（长期事实，异步注入）+ RustFS/MinIO 对话 JSON（完整事实源持久化）
+- 三层记忆按访问模式分层：Redis String JSON 消息窗口（短期，同步加载，微秒级）+ ES `dense_vector` 向量索引（长期事实，异步注入）+ RustFS/MinIO 对话 JSON（完整事实源持久化）
 - 短期压缩链路「只写 Redis」、长期抽取链路「只写 ES」，两条链路职责不交叉，避免摘要重复灌入向量索引
 - `LongTermMemoryPromptBuilder` 约束 LLM 仅提取稳定用户事实，`FactSanitizer` 写入前过滤误抽取，双保险保障向量索引信噪比
 
@@ -122,4 +122,4 @@ SSE 事件类型：`session` / `chunk` / `tool` / `done` / `error`
 
 ---
 
-_文档版本：基于 v2 全景（v2.0 → v2.5）· 更新日期：2026-05-07_
+_文档版本：基于 v2 全景（v2.0 → v2.6）· 更新日期：2026-05-09_
