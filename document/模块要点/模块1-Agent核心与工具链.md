@@ -83,7 +83,7 @@ sequenceDiagram
 
 ### 1. BaseAgent.buildReactAgent() — Agent 构建工厂
 
-`[BaseAgent.java](src/main/java/com/yuyu/fishagent/agent/BaseAgent.java)` 第 57-82 行：
+`[BaseAgent.java](../../src/main/java/com/yuyu/fishagent/agent/BaseAgent.java)` 第 57-82 行：
 
 ```java
 protected ReactAgent buildReactAgent(List<ToolCallback> tools, String systemPrompt) {
@@ -110,13 +110,13 @@ protected ReactAgent buildReactAgent(List<ToolCallback> tools, String systemProm
 
 ### 2. ToolRegistry — 自动发现 + 隔离失败
 
-`[ToolRegistry.java](src/main/java/com/yuyu/fishagent/agent/tool/ToolRegistry.java)` 第 34-53 行：
+`[ToolRegistry.java](../../src/main/java/com/yuyu/fishagent/agent/tool/ToolRegistry.java)` 第 34-53 行：
 
 启动期遍历所有 `AgentToolProvider` Bean，逐个调用 `build()` 构造 `ToolCallback`。单个工具构造失败 **不阻断**其他工具注册——catch 后 continue。同时为每个 `ToolCallback` 包一层 DEBUG 日志代理，运行时每次工具调用自动打印工具名与输入摘要。
 
 ### 3. ChatAgent.stream() — 流式入口
 
-`[ChatAgent.java](src/main/java/com/yuyu/fishagent/agent/ChatAgent.java)` 第 54-71 行：
+`[ChatAgent.java](../../src/main/java/com/yuyu/fishagent/agent/ChatAgent.java)` 第 54-71 行：
 
 ```java
 public Flux<NodeOutput> stream(List<Message> messages, String threadId) {
@@ -288,6 +288,57 @@ ReAct = Reasoning + Acting。模型在"思考→行动→观察→思考"的循�
 - 构造期：`ToolRegistry.init()` 中 catch 失败的工具 → 跳过，log 告警。如果搜索结果工具构造失败，DateTime 和 Calculator 仍可用。
 - 运行时：`ToolCallback` 内部 catch 异常并返回 error 字符串（而非抛异常）。Agent 看到 error 字符串后可以换策略——例如 Tavily 返回 `"ERROR: timeout"`，模型可以转用 Bocha 搜索或告诉用户"搜索暂时不可用"。单工具异常不传播到 Agent 主循环——这是关键设计：一个外部 API 挂了不会让对话整体崩溃。
 
+**Q：LLM API 本身失败（超时 / 429 / 连接断开）怎么办？**
+
+`ChatService.streamChat()` 的 `subscribe()` 中有三层处理：
+- `onError` 回调：捕获 Reactor 异常 → `safeError(emitter, err)` 向前端发送 `event: error` 事件（含错误消息）→ `emitter.completeWithError()` 关闭 SSE 流。用户看到的是错误提示而非无限转圈。
+- `emitter.onTimeout`：SSE 长时间无数据写入时触发 → 释放资源 + `disposable.dispose()` 中断 ReAct 循环。
+- `emitter.onError`：客户端断连时触发 → 同样释放资源，避免服务端泄漏。
+
+当前**没有 fallback 策略**（如 DeepSeek 挂了自动切 DashScope），因为三家的 API Key 和模型能力不同（DeepSeek 支持 tool calling 但 DashScope 的工具协议有差异），热切换可能导致更差的体验。设计选择是"快速失败 + 明确提示"而非"静默降级"。未来可考虑在 `FishChatModelConfiguration` 中引入 `FallbackChatModel` 包装。
+
+**Q：Agent 的 system prompt 是怎么设计的？为什么不让模型暴露 RAG / 记忆等技术细节？**
+
+`application.yml` 中 `fish.agent.instruction` 定义核心人设，关键设计原则：
+
+1. **自然承接背景信息**："若消息中出现可供参考的用户背景信息，请直接据此作答，像一直了解对方一样自然承接，不要先否认「不记得」再引用背景。"——RAG 召回的事实以 `SystemMessage` 形式注入，指令要求模型当作"已知信息"使用，而非"检索到的资料"。
+2. **禁止技术元叙述**："勿在面向用户的句子中提及：长期记忆、记忆片段、检索结果、系统提示、上下文块、RAG、embedding 等技术或来源措辞"——用户不需要知道底层用了向量检索，只需要得到准确的回答。
+3. **时间锚定**："当前会话时间"由服务端注入，模型以服务器时间为锚判断"今天""最近"等相对时间，而非依赖训练数据的截止日期。
+
+RAG 上下文块由 `RagRecall.renderBlock()` 注入，引导语为"以下为可能与当前对话相关的已知事实（仅使用其中已列内容，勿编造）"，同样要求模型"自然承接，勿提及「记忆」「片段」「检索」"。整条 `SystemMessage` 由 `ChatService.buildMessages()` 合并（人设 + 短期摘要 + RAG 上下文 + 当前时间），避免多条 `SystemMessage` 触发框架 WARN。
+
+**Q：工具的 description 怎么写才能让 LLM 准确选择？**
+
+Tool description 是 LLM 决定调用哪个工具的唯一依据，项目遵循三个原则：
+
+1. **开头说明用途**：`"使用 Tavily 进行联网搜索，返回相关网页摘要列表与简短答案。"`——模型看到"联网搜索"就知道何时该用。
+2. **标注必选/可选参数 + 默认值**：`"query 必填，maxResults 默认 5（最大 20）。"`——减少模型瞎编参数。
+3. **中文描述**：因为 system prompt 和用户交互都是中文，工具描述也用中文，避免模型在"中文思考→英文工具描述"之间产生语义漂移。
+
+对比反面案例：如果 `DateTimeToolProvider` 的 description 只写 `"get current datetime"`，模型可能不确定该用 DateTime 还是 WebFetch 去搜"现在几点"；写成 `"获取当前的日期与时间。可选传入 IANA 时区名（如 Asia/Shanghai），不传则使用系统默认时区。"` 后，模型能精确匹配"用户问现在几点"→ 调用 DateTime。
+
+**Q：一次典型对话消耗多少 token？最坏情况呢？**
+
+粗略估算（以 DeepSeek-chat 为基准，1K token ≈ ¥0.001）：
+
+| 场景 | LLM 调用次数 | 预估 token | 成本 |
+|------|-------------|-----------|------|
+| 简单问答（无工具） | 1 | ~1.5K（500 prompt + 1K response） | ¥0.0015 |
+| 单工具调用（如搜索） | 2 | ~4K（含工具定义 + 搜索结果） | ¥0.004 |
+| 双工具链式调用（搜索→抓取） | 3 | ~8K | ¥0.008 |
+| 最坏情况（maxIterations=10 打满） | 10 | ~30-40K | ¥0.03-0.04 |
+
+额外 token 消耗来源：
+- 记忆压缩：~2K/次（异步，不影响用户体感）
+- 长期事实抽取：~1.5K/次（异步）
+- RAG 查询重写（如开启）：~1K/次
+
+`maxIterations=10` 的设置是在"处理复杂任务能力"和"成本/延迟上限"之间的平衡——实际对话中 90% 以上在 1-3 次内完成，10 次是极端异常的兜底。
+
+**Q：水平扩展时 Agent 有什么瓶颈？**
+
+Agent 本身是无状态的——`ChatAgent` 不持有任何跨请求的会话状态（消息历史在 Redis，长期事实在 ES）。多实例部署时，同一用户的两次请求可能落到不同实例上，完全不影响。唯一的注意点是 `AgentStatus` 状态机在内存中——如果实例 A 正在处理 session-123，实例 B 收到同一 session 的请求时不会知道 A 的状态。但这已被**会话互斥锁**（Redis `SET NX`）覆盖——B 在 Service 层获取不到锁直接返回 409，根本不会进入 Agent。
+
 ---
 
 ## 关联代码路径速查
@@ -297,7 +348,6 @@ ReAct = Reasoning + Acting。模型在"思考→行动→观察→思考"的循�
 | ReAct Agent 主循环 | `agent/ChatAgent.java` |
 | Agent 抽象基类 + 构建工厂 | `agent/BaseAgent.java` |
 | 状态机 | `agent/AgentStatus.java` |
-| Agent 配置 | `agent/AgentConfig.java` |
 | 工具 SPI | `agent/tool/AgentToolProvider.java` |
 | 工具注册中心 | `agent/tool/ToolRegistry.java` |
 | 内置工具 | `agent/tool/builtin/*.java` |

@@ -1,9 +1,0 @@
-[ {
-  "role" : "user",
-  "content" : "你好啊",
-  "createdAt" : 1777883648377
-}, {
-  "role" : "assistant",
-  "content" : "你好！很高兴见到你～\uD83D\uDE0A  \n有什么我可以帮你的吗？",
-  "createdAt" : 1777883648377
-} ]

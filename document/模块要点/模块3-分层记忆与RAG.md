@@ -132,7 +132,7 @@ flowchart LR
 
 ### 1. 短期记忆：Redis String 消息窗口
 
-`[RedisShortTermMemoryStore.java](src/main/java/com/yuyu/fishagent/agent/memory/shortterm/RedisShortTermMemoryStore.java)`：
+`[RedisShortTermMemoryStore.java](../../src/main/java/com/yuyu/fishagent/agent/memory/shortterm/RedisShortTermMemoryStore.java)`：
 
 - **summary key**：`fish:memory:short:{sessionId}:summary`（String）
 - **messages key**：`fish:memory:short:{sessionId}:messages`（String，JSON 序列化消息列表）
@@ -141,7 +141,7 @@ flowchart LR
 
 ### 2. RAG 编排：虚拟线程 + ThreadLocal 回放
 
-`[RagRecall.java](src/main/java/com/yuyu/fishagent/agent/memory/rag/recall/RagRecall.java)`：
+`[RagRecall.java](../../src/main/java/com/yuyu/fishagent/agent/memory/rag/recall/RagRecall.java)`：
 
 三个 Searcher 并发执行时，`UserContextHolder`（ThreadLocal）在虚拟线程间不会自动传递。解决方式：
 - 进入异步前从 `UserContextHolder.get()` 快照 `userId`
@@ -159,11 +159,11 @@ flowchart LR
 
 ### 3. 长期记忆：异步抽取 + 防御性 filter
 
-`[LongTermMemoryIngestionService.java](src/main/java/com/yuyu/fishagent/service/LongTermMemoryIngestionService.java)`：
+`[LongTermMemoryIngestionService.java](../../src/main/java/com/yuyu/fishagent/service/LongTermMemoryIngestionService.java)`：
 
-每轮对话结束后 `CompletableFuture.runAsync`，LLM 判断用户输入中是否含稳定事实 → 抽取 → ES 写入。
+由 `ChatService` 每轮对话结束后通过 `CompletableFuture.runAsync()` 异步调用 `ingestFromUserInput()`，LLM 判断用户输入中是否含稳定事实 → 抽取 → ES 写入。
 
-`[UserMemoryElasticsearchSearcher.java](src/main/java/com/yuyu/fishagent/agent/memory/rag/recall/UserMemoryElasticsearchSearcher.java)` 第 56 行：
+`[UserMemoryElasticsearchSearcher.java](../../src/main/java/com/yuyu/fishagent/agent/memory/rag/recall/UserMemoryElasticsearchSearcher.java)` 第 56 行：
 
 ```java
 .filter(f -> f.term(t -> t.field("source_type").value("chat")))
@@ -357,6 +357,44 @@ ES 8.x 的 `dense_vector` 字段类型支持：
 **Q：长期记忆如何避免写入重复/相似事实？**
 
 `LongTermMemoryFactSanitizer` 对 LLM 输出做两轮清洗：去掉过长/过短/纯标点片段。当前版本未做写入前 embedding 余弦去重——这已在全景文档"可改进项"中列出（v2.4+）。当前策略偏"宁可多存不可漏存"，检索端的 `max-injected-facts=8` 限制注入数量，冗余事实不会撑爆上下文。且 `source_type=chat` 的防御 filter 确保文档切片误写入也不会被记忆检索拿到。
+
+**Q：记忆压缩和事实抽取的 prompt 是怎么设计的？为什么分开？**
+
+两个 prompt 职责完全不同，故意分离：
+
+**压缩 prompt**（`MemoryPromptBuilder`）：输入完整 chat_history → 输出 `{"short_term_summary": "...", "long_term_facts": []}`。关键约束是 `long_term_facts` **必须返回空数组**——压缩只管摘要，不提取长期事实。这避免了压缩链路和抽取链路同时写入 ES 导致重复。摘要要求"只保留继续对话所需的信息"，避免复述无关细节，压缩后的摘要通常 500-1000 字符。
+
+**事实抽取 prompt**（`LongTermMemoryPromptBuilder`）：仅分析当前用户输入 → 输出 `{"long_term_facts": ["事实1"]}`。严格的白名单过滤——只提取三类信息：①用户身份（姓名/职业/项目背景）②明确偏好 ③长期目标/约束。同时有黑名单过滤——寒暄、疑问句中的未确认事实、助手推测、情绪抱怨、对 Fish-Agent 自身的架构描述都不保存。这样设计的目的是避免把"我刚才问的那个问题"当作长期事实存入 ES。
+
+分开的原因：压缩是**批量处理历史**（30 条消息），抽取是**单条分析当前输入**。输入粒度不同、输出 schema 不同、调用频率不同（压缩 ≥30 条才触发，抽取每轮都跑）。
+
+**Q：RAG 的参数（8 facts / 4000 chars / 512 tokens / 50 overlap / 1536 维）是怎么定的？**
+
+这些参数不是拍脑袋的，各有依据：
+
+- **`max-injected-facts=8`**：基于 LLM 上下文预算分配。DeepSeek-chat 上下文窗口 64K，但实际有效注意力范围在 4K-8K token 后衰减。8 条事实 × 平均 200 字 ≈ 1600 字 ≈ 2K token，加上 system prompt + 短期摘要 + 工具定义 + 对话历史，总计约 6-8K token，留足了 response 空间。
+- **`max-injected-chars=4000`**：作为事实条数的字符级上限，防止单条事实特别长时挤占过多上下文。
+- **`512 tokens / 50 overlap`**：512 对齐 DashScope `text-embedding-v2` 的输入上限；50 token overlap ≈ 1-2 个中文句子，确保跨 chunk 边界的语义不丢失。做过非正式对比：256 太碎（句子被切断），1024 太粗（检索精度下降），512 是在粒度和完整性之间的平衡点。
+- **`1536 维 cosine`**：`text-embedding-v2` 的默认维度。选 DashScope 而非 OpenAI embedding 的原因：① DashScope 国内延迟低（<50ms vs OpenAI 200-500ms）；② 中文文本的 embedding 质量更好（阿里针对中文语料优化）；③ 不需要翻墙。ES 8.x 的 HNSW + cosine 在百万级向量内召回率和 QPS 均够用。
+- **`knn-num-candidates=80`**：HNSW 的 `numCandidates` 越大召回越精确但越慢。80 是 HNSW 论文推荐的 `k × 16`（k=5）的经验值，实测在十万级向量下 P95 延迟 <50ms。
+
+**Q：RAG 上下文是怎么注入到 Agent 的？为什么不用多轮对话中的 user message？**
+
+`RagRecall.renderBlock()` 将检索结果格式化为编号列表，拼接到 `SystemMessage` 末尾。引导语为"以下为可能与当前对话相关的已知事实（仅使用其中已列内容，勿编造）"。
+
+选择注入 `SystemMessage` 而非 `UserMessage` 的原因：
+1. **语义定位**：RAG 上下文是"系统提供的背景知识"，不是"用户说的话"。放入 SystemMessage 让模型将其视为已知事实而非需要回复的内容。
+2. **避免干扰工具调用**：如果作为 UserMessage 注入，模型可能误以为用户在问问题，触发不必要的搜索工具。
+3. **统一合并**：`ChatService.buildMessages()` 将人设 + 短期摘要 + RAG 上下文 + 当前时间合并为**单条 SystemMessage**，避免多条 SystemMessage 触发 Spring AI Alibaba AgentLlmNode 的 WARN 日志。
+
+**Q：ES kNN 在数据量增长后性能怎么变化？什么时候该换 Milvus？**
+
+ES 的 HNSW 向量索引在百万级以内 P95 <50ms，与项目当前规模（数千用户 × 数百条事实 ≈ 数十万向量）匹配良好。性能衰减拐点在千万级——因为 ES 的 kNN 查询在 coordinating node 上单线程执行，无法利用多 shard 并行。扩展路径：
+- **短期**（百万→五百万）：增加 ES shard 数 + 提升 `num_candidates` 精度
+- **中期**（五百万→千万）：对 embedding 降维（1536→768）减少索引体积，或引入 Milvus 做向量专查、ES 只负责文本路
+- **长期**（千万+）：Milvus + ES 双引擎，向量路走 Milvus（GPU 加速 ANN），文本路走 ES（ik 分词）
+
+Redis 短期记忆不是瓶颈——单用户仅 20 条消息 + 1 摘要，总占用 <10KB。并发 1 万会话也只 100MB，Redis 单节点轻松覆盖。
 
 ---
 

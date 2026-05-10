@@ -1,0 +1,164 @@
+# ═══════════════════════════════════════════════════════════════
+# Fish-Agent  Docker Compose
+# ═══════════════════════════════════════════════════════════════
+# 使用方式：
+#   docker compose up -d              # 启动所有服务
+#   docker compose up -d mysql redis  # 仅启动基础设施
+#   docker compose logs -f java-backend
+# ═══════════════════════════════════════════════════════════════
+
+services:
+
+  # ── MySQL 8 ─────────────────────────────────────────────────
+  mysql:
+    image: mysql:8
+    container_name: fish-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-fish123}
+      MYSQL_DATABASE: fish_agent
+      MYSQL_CHARSET: utf8mb4
+      MYSQL_COLLATION: utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./database/sql/fish_agent.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Redis 8 ─────────────────────────────────────────────────
+  redis:
+    image: redis:8.0
+    container_name: fish-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Elasticsearch 8.13 ─────────────────────────────────────
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: fish-es
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 10
+
+  # ── RustFS (S3 兼容对象存储) ────────────────────────────────
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: fish-rustfs
+    restart: unless-stopped
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    command: /data
+    volumes:
+      - rustfs_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Python Worker (PDF OCR → ES) ────────────────────────────
+  python-worker:
+    build:
+      context: ./python
+      dockerfile: Dockerfile
+    container_name: fish-python-worker
+    restart: unless-stopped
+    ports:
+      - "8091:8091"
+    env_file:
+      - ./python/.env
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+      DB_URL: jdbc:mysql://mysql:3306/fish_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      RUSTFS_ENDPOINT: http://rustfs:9000
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+
+  # ── Java Backend (Spring Boot) ──────────────────────────────
+  java-backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: fish-backend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: prod
+      DB_URL: jdbc:mysql://mysql:3306/fish_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
+      DB_USERNAME: root
+      DB_PASSWORD: ${DB_PASSWORD:-fish123}
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      ELASTICSEARCH_URIS: http://elasticsearch:9200
+      RUSTFS_ENDPOINT: http://rustfs:9000
+      RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-}
+      RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY:-}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+      rustfs:
+        condition: service_healthy
+
+  # ── Frontend (Vue 3 + Nginx) ───────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: fish-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - java-backend
+
+# ── 数据卷 ────────────────────────────────────────────────────
+volumes:
+  mysql_data:
+  redis_data:
+  es_data:
+  rustfs_data:
