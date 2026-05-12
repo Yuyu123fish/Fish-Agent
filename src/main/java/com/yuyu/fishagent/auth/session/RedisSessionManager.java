@@ -3,7 +3,7 @@ package com.yuyu.fishagent.auth.session;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.auth.context.UserContext;
-import com.yuyu.fishagent.config.AuthProperties;
+import com.yuyu.fishagent.auth.config.AuthProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;

@@ -5,7 +5,11 @@ import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 
 @SpringBootApplication
-@MapperScan("com.yuyu.fishagent.mapper")
+@MapperScan({
+        "com.yuyu.fishagent.auth.mapper",
+        "com.yuyu.fishagent.chat.mapper",
+        "com.yuyu.fishagent.rag.mapper"
+})
 public class FishAgentApplication {
 
     public static void main(String[] args) {

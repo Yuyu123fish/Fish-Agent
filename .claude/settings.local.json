@@ -11,7 +11,17 @@
       "Bash(xxd)",
       "WebSearch",
       "mcp__plugin_context7_context7__resolve-library-id",
-      "mcp__plugin_context7_context7__query-docs"
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(findstr /v \"python\\\\.venv\")",
+      "Bash(dir \"D:\\\\1_Backend\\\\Fish-Agent\" /a)",
+      "Bash(findstr /v \"python.venv\")",
+      "Bash(findstr /v \"System Volume Information\")",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\1_Backend\\\\Fish-Agent\\\\src\\\\main\\\\java\\\\com\\\\yuyu\\\\fishagent\" -Directory | ForEach-Object { $_.Name } | Sort-Object)",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\1_Backend\\\\Fish-Agent\\\\plan\" -Recurse -File | ForEach-Object { $_.FullName.Replace\\(\"D:\\\\1_Backend\\\\Fish-Agent\\\\\", \"\"\\) })",
+      "Bash(xargs grep -l \"com\\\\.yuyu\\\\.fishagent\\\\.service\\\\.\")",
+      "Bash(xargs grep -l \"com\\\\.yuyu\\\\.fishagent\\\\.controller\\\\.\")",
+      "Bash(xargs grep -l \"com\\\\.yuyu\\\\.fishagent\\\\.dto\\\\.\")",
+      "PowerShell(Get-ChildItem -Path \"D:\\\\1_Backend\\\\Fish-Agent\\\\document\" -Recurse -File | ForEach-Object { $_.FullName.Replace\\(\"D:\\\\1_Backend\\\\Fish-Agent\\\\\", \"\"\\) } | Sort-Object)"
     ]
   }
 }

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.auth.session.RedisSessionManager;
-import com.yuyu.fishagent.config.AuthProperties;
+import com.yuyu.fishagent.auth.config.AuthProperties;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;

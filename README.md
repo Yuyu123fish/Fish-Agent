@@ -325,27 +325,20 @@ pnpm dev
 ```
 Fish-Agent/
 ├── src/main/java/com/yuyu/fishagent/
-│   ├── agent/                   ReAct Agent 核心（循环 + 工具编排 + 状态机）
-│   │   ├── memory/
-│   │   │   ├── shortterm/       Redis String 短期记忆
-│   │   │   ├── longterm/        ES 长期事实抽取
-│   │   │   ├── compress/        LLM 记忆压缩
-│   │   │   └── rag/             查询重写 → 多查询扩展 → 三路并发召回
+│   ├── agent/                   ReAct Agent 核心（循环 + 工具编排 + 状态机 + config/）
 │   │   └── tool/                工具 SPI（内置 5 + 外部 5）
-│   ├── auth/                    鉴权（GlobalAuthInterceptor + Redis Session + UserContext）
-│   ├── ratelimit/               Redis Lua 令牌桶 + SSE 并发 + 会话互斥锁
-│   ├── config/                  配置层（模型路由 / RustFS / 限流 / 知识库 / CORS）
-│   │   └── llm/                 EnvironmentPostProcessor + Chat/Embedding Bean 收敛
-│   ├── controller/              REST 控制器（Auth / Chat / Memory / Knowledge）
-│   ├── service/                 业务服务（Chat 编排 / 记忆压缩 / 长期录入 / 知识库闭环）
-│   │   └── knowledge/           文档上传入队 + 列表/删除管理 + 孤儿补偿
-│   ├── entity/ / mapper/ / dto/ MyBatis-Plus 实体 + DTO
-│   └── exception/               全局异常处理（含 409 SESSION_LOCKED）
+│   ├── chat/                    对话模块（Controller + Service + history/ + dto/ + entity/ + mapper/）
+│   ├── rag/                     RAG + 知识库（Controller + service/ + pipeline/ + document/ + dto/ + config/）
+│   ├── memory/                  记忆系统（Controller + Service + shortterm/ + longterm/ + compress/ + config/）
+│   ├── auth/                    认证鉴权（Controller + Service + context/ + interceptor/ + session/ + config/）
+│   ├── llm/                     LLM 配置（三路模型路由 + Chat/Embedding Bean）
+│   ├── common/                  共享基础设施（exception/ + ratelimit/ + config/ + dto/ChatMessageDTO）
+│   └── FishAgentApplication.java
 ├── src/main/resources/
 │   ├── application.yml          主配置（git 追踪）
 │   ├── application-dev.yml      本地敏感凭据（gitignore）
 │   ├── application-dev.yml.example  模板
-│   └── META-INF/spring.factories   注册 FishLlmEnvironmentPostProcessor
+│   └── META-INF/spring.factories
 ├── python/                      Python Worker（Stream 消费 → OCR → chunk → embed → ES）
 ├── frontend/                    Vue 3 前端（SSE 流式 + 暗夜模式 + 知识库管理）
 ├── docker/                      Docker 启动命令参考
@@ -380,6 +373,6 @@ Fish-Agent/
 
 - [Python Worker 详细说明](python/README.md) —— venv / Docker 启动、OCR 管线、配置对齐、水平扩展
 - [前端详细说明](frontend/README.md) —— SSE 协议、目录结构、组件说明
-- [v2 全景文档](document/v2/v2-全景文档-20260505.md) —— 全链路架构、数据模型、关键流程、代码路径速查
-- [模块详解](document/模块及面试要点/) —— 6 大模块的技术选型对比与面试追问预判
+- [v3 全景文档](document/v3/v3-全景文档-20260512.md) —— 全链路架构、数据模型、关键流程、代码路径速查
+- [v2 全景文档](document/v2/v2-全景文档-20260505.md) —— v2.x 历史版本全景（含 v2.0 ~ v2.6 增量索引）
 

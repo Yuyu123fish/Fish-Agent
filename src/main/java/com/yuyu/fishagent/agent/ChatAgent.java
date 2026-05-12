@@ -4,7 +4,7 @@ import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.yuyu.fishagent.agent.tool.ToolRegistry;
-import com.yuyu.fishagent.config.AgentProperties;
+import com.yuyu.fishagent.agent.config.AgentProperties;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.Message;

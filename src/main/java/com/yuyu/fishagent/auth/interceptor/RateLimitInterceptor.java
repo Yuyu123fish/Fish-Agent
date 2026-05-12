@@ -2,9 +2,9 @@ package com.yuyu.fishagent.auth.interceptor;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
-import com.yuyu.fishagent.config.RateLimitProperties;
-import com.yuyu.fishagent.ratelimit.RateLimitResult;
-import com.yuyu.fishagent.ratelimit.RateLimitService;
+import com.yuyu.fishagent.common.config.RateLimitProperties;
+import com.yuyu.fishagent.common.ratelimit.RateLimitResult;
+import com.yuyu.fishagent.common.ratelimit.RateLimitService;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;

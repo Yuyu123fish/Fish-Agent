@@ -1,3 +1,3 @@
 # Spring Boot 2.x–3.x 仍通过该文件加载 EnvironmentPostProcessor（早于 ApplicationContext）。
 org.springframework.boot.env.EnvironmentPostProcessor=\
-com.yuyu.fishagent.config.llm.FishLlmEnvironmentPostProcessor
+com.yuyu.fishagent.llm.config.FishLlmEnvironmentPostProcessor

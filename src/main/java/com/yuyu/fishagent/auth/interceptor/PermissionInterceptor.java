@@ -3,7 +3,7 @@ package com.yuyu.fishagent.auth.interceptor;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
-import com.yuyu.fishagent.enums.UserRole;
+import com.yuyu.fishagent.auth.enums.UserRole;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.RequiredArgsConstructor;

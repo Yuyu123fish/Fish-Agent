@@ -1,7 +1,7 @@
 package com.yuyu.fishagent.agent.tool.external;
 
 import com.yuyu.fishagent.agent.tool.AgentToolProvider;
-import com.yuyu.fishagent.config.ToolProperties;
+import com.yuyu.fishagent.agent.config.ToolProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.ToolCallback;

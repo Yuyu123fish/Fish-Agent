@@ -107,9 +107,11 @@ logging:
   level:
     reactor.netty.http.client: DEBUG
     com.yuyu.fishagent:
-      agent.memory: debug
-      agent.tool: debug
-      service: debug
+      agent: debug
+      auth: debug
+      chat: debug
+      memory: debug
+      rag: debug
 
 # ═══════════════════════════════════════════════════════════════
 # Fish-Agent 业务配置
