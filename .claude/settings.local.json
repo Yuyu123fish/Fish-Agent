@@ -8,7 +8,10 @@
       "Bash(npx vue-tsc *)",
       "Bash(mvn compile *)",
       "Bash(grep -E \"\\\\.\\(xml|yml|yaml|json\\)$\")",
-      "Bash(xxd)"
+      "Bash(xxd)",
+      "WebSearch",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs"
     ]
   }
 }

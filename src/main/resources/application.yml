@@ -157,7 +157,7 @@ fish:
     enabled: ${FISH_RAG_ENABLED:true}
     rewrite-enabled: ${FISH_RAG_REWRITE_ENABLED:false}
     # 查询重写（仅 rewrite-enabled=true 时生效）：NONE | CHAT_MODEL
-    rewrite-provider: NONE
+    rewrite-provider: CHAT_MODEL
     rewrite-temperature: 0.1
     rewrite-max-tokens: 256
     rewrite-max-chars: 512
