@@ -16,6 +16,8 @@
 from __future__ import annotations
 
 import logging
+import random
+import time
 from typing import Any
 
 import httpx
@@ -23,6 +25,16 @@ import httpx
 from fish_worker.config import Settings
 
 log = logging.getLogger(__name__)
+
+_RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+
+
+class _RetryableHttpStatus(Exception):
+    """标记 HTTP 层可重试状态码，保留原响应用于最终抛出标准异常。"""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self.response = response
+        super().__init__(f"retryable HTTP status: {response.status_code}")
 
 
 class Embedder:
@@ -71,12 +83,12 @@ class Embedder:
                     "model": self._s.dashscope_embedding_model,
                     "input": {"texts": batch},
                 }
-                r = client.post(
+                r = self._post_with_retry(
+                    client,
                     url,
                     headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                     json=body,
                 )
-                r.raise_for_status()  # HTTP 4xx/5xx → 抛异常
                 data = r.json()
                 emb_block = self._parse_dashscope_output(data, len(batch))
 
@@ -137,8 +149,11 @@ class Embedder:
         vecs: list[list[float]] = []
         with httpx.Client(timeout=120.0) as client:
             for t in texts:
-                r = client.post(f"{base}/api/embeddings", json={"model": model, "prompt": t})
-                r.raise_for_status()
+                r = self._post_with_retry(
+                    client,
+                    f"{base}/api/embeddings",
+                    json={"model": model, "prompt": t},
+                )
                 data = r.json()
                 emb = data.get("embedding")
                 if not isinstance(emb, list):
@@ -154,3 +169,74 @@ class Embedder:
                     )
                 vecs.append(vec)
         return vecs
+
+    # ----------- HTTP retry -----------
+
+    def _post_with_retry(
+        self,
+        client: httpx.Client,
+        url: str,
+        *,
+        headers: dict[str, str] | None = None,
+        json: dict[str, Any] | None = None,
+    ) -> httpx.Response:
+        """执行可重试 POST。
+
+        只重试短暂性错误：HTTP 429 / 5xx 与网络异常。HTTP 400/401/403 等配置或请求错误
+        立即失败，避免把确定性错误拖成长时间等待。
+        """
+        max_retries = max(0, int(self._s.fish_worker_embed_max_retries))
+        attempt = 0
+
+        while True:
+            try:
+                response = client.post(url, headers=headers, json=json)
+                if response.status_code in _RETRYABLE_STATUS:
+                    raise _RetryableHttpStatus(response)
+                response.raise_for_status()
+                return response
+
+            except _RetryableHttpStatus as e:
+                attempt += 1
+                if attempt > max_retries:
+                    e.response.raise_for_status()
+                    raise
+                delay = self._retry_delay(e.response.headers.get("Retry-After"), attempt)
+                log.warning(
+                    "embedding HTTP status=%s retry=%s/%s delay=%.2fs",
+                    e.response.status_code,
+                    attempt,
+                    max_retries,
+                    delay,
+                )
+                time.sleep(delay)
+
+            except httpx.RequestError as e:
+                attempt += 1
+                if attempt > max_retries:
+                    raise
+                delay = self._retry_delay(None, attempt)
+                log.warning(
+                    "embedding request error=%s retry=%s/%s delay=%.2fs",
+                    type(e).__name__,
+                    attempt,
+                    max_retries,
+                    delay,
+                )
+                time.sleep(delay)
+
+    def _retry_delay(self, retry_after: str | None, attempt: int) -> float:
+        """计算指数退避时间，优先尊重 Retry-After，最多不超过配置上限。"""
+        cap = max(0.0, float(self._s.fish_worker_embed_backoff_max))
+        if cap <= 0:
+            return 0.0
+        if retry_after:
+            try:
+                return min(cap, max(0.0, float(retry_after)))
+            except ValueError:
+                pass
+
+        base = max(0.0, float(self._s.fish_worker_embed_backoff_base))
+        delay = min(cap, base * (2 ** max(0, attempt - 1)))
+        jitter = random.uniform(0.0, min(0.5, cap))
+        return min(cap, delay + jitter)

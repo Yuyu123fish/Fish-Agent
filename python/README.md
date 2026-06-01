@@ -165,17 +165,25 @@ docker run --rm -p 8091:8091 --env-file ./python/.env fish-agent-worker
 | MIME | 从 MinIO `GetObject` 响应头读取 `Content-Type`；`application/octet-stream` 且文件名以 `.pdf` 结尾时按 PDF 推断 |
 | PDF解析 | `PyMuPDF` 渲染为 300 DPI 图片 → `pytesseract` OCR (chi_sim+eng) 识别。完全绕过字体编码 |
 | 分块 | `tiktoken` cl100k_base，默认 512 token / 50 overlap，按页分组不跨页合并 |
-| 嵌入 | `FISH_LLM_EMBEDDING_PROVIDER=DASHSCOPE`（批量≤25）或 `OLLAMA`（逐条） |
+| 嵌入 | `FISH_LLM_EMBEDDING_PROVIDER=DASHSCOPE`（批量≤25）或 `OLLAMA`（逐条）；429 / 5xx / 网络异常会指数退避重试，400/401 等确定性错误立即失败 |
 | ES bulk | 默认每批 20 条；任一批失败则任务 `FAILED`，已写入分片不回滚 |
 | 空文本 | 解析结果为空 → `SUCCESS`，`chunk_count=0`，`error_msg` 记录警告 |
 | Stream | `XREADGROUP` + `XAUTOCLAIM`（idle≥120s）+ 处理后 **`XACK`**（含失败任务，避免毒消息死循环） |
-| 状态流转 | `PENDING → PROCESSING → SUCCESS/FAILED`。无论成败都 XACK。 |
+| 处理心跳 | 长任务处于 `PROCESSING` 时会按 `FISH_WORKER_HEARTBEAT_SECONDS` 刷新 `updated_at`，防止 Java 侧孤儿补偿误判 |
+| 状态流转 | `PENDING → PROCESSING → SUCCESS/FAILED`。写 `SUCCESS` 使用状态 CAS；若终态写入失败，会清理本轮已写 ES 分片。无论成败都 XACK。 |
+
+### 长任务保护与重试
+
+- `FISH_WORKER_HEARTBEAT_SECONDS` 默认 30 秒，建议明显小于 Java 侧孤儿补偿超时时间（当前 Java 默认按 10 分钟级别处理），这样 OCR / embedding 较慢时也能持续证明任务仍在执行。
+- `FISH_WORKER_EMBED_MAX_RETRIES`、`FISH_WORKER_EMBED_BACKOFF_BASE`、`FISH_WORKER_EMBED_BACKOFF_MAX` 控制 embedding HTTP 重试。仅重试 429、5xx 和网络异常；鉴权、参数、维度等确定性错误仍会快速失败并把任务标记为 `FAILED`。
 
 ---
 
 ## 与 Java 对齐的配置键
 
 `REDIS_*`、`RUSTFS_*`、`ELASTICSEARCH_*`、`DB_*` / `DB_URL`、`FISH_DOC_INGEST_STREAM`、`MEMORY_USER_INDEX`（Java 对话记忆）、`KNOWLEDGE_USER_INDEX`（≈ `fish.knowledge.user-knowledge-index-name`）、`KNOWLEDGE_PUBLIC_INDEX`（≈ `fish.knowledge.public-index-name`）、`DASHSCOPE_*`、`FISH_LLM_EMBEDDING_PROVIDER`、`OLLAMA_*` 与 [`application.yml`](../src/main/resources/application.yml) 一致。
+
+Worker 专属调优键包括：`FISH_WORKER_CONCURRENCY`、`FISH_WORKER_CHUNK_SIZE`、`FISH_WORKER_CHUNK_OVERLAP`、`FISH_WORKER_ES_BATCH_SIZE`、`FISH_WORKER_DASHSCOPE_EMBED_BATCH`、`FISH_WORKER_BLOCK_MS`、`FISH_WORKER_HEALTH_PORT`、`FISH_WORKER_HEARTBEAT_SECONDS`、`FISH_WORKER_EMBED_MAX_RETRIES`、`FISH_WORKER_EMBED_BACKOFF_BASE`、`FISH_WORKER_EMBED_BACKOFF_MAX`。
 
 ---
 

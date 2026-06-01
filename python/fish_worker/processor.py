@@ -19,6 +19,8 @@ import logging
 import os
 import shutil
 import tempfile
+import threading
+from collections.abc import Callable
 
 from fish_worker.chunker.text_chunker import chunk_elements
 from fish_worker.deps import WorkerContext
@@ -43,10 +45,14 @@ class IngestProcessor:
         tmp_root = os.path.join(tempfile.gettempdir(), "fish-worker", task.task_id)
         os.makedirs(tmp_root, exist_ok=True)
 
-        # 先标记 PROCESSING，防止其他 worker 通过 XAUTOCLAIM 重复认领
-        self._db.update_status(task.task_id, "PROCESSING")
+        heartbeat_stop: threading.Event | None = None
+        heartbeat_thread: threading.Thread | None = None
 
         try:
+            # 先标记 PROCESSING，防止其他 worker 通过 XAUTOCLAIM 重复认领
+            self._db.update_status(task.task_id, "PROCESSING")
+            heartbeat_stop, heartbeat_thread = self._start_heartbeat(task.task_id)
+
             # ---- 步骤 1: 从 MinIO 下载原文件 ----
             # get_object 返回 (bytes, content_type)，content_type 来自上传时 Java 侧设置的 HTTP 头
             content, content_type = self._minio.get_object(task.minio_path)
@@ -57,9 +63,8 @@ class IngestProcessor:
 
             # ---- 步骤 3: 空结果处理（如纯图片扫描件，unstructured fast 模式无法提取文字）----
             if not elements:
-                self._db.update_status(
+                self._mark_success(
                     task.task_id,
-                    "SUCCESS",
                     error_msg="no extractable text",
                     chunk_count=0,
                 )
@@ -73,9 +78,8 @@ class IngestProcessor:
                 overlap=self._settings.fish_worker_chunk_overlap,
             )
             if not chunks:
-                self._db.update_status(
+                self._mark_success(
                     task.task_id,
-                    "SUCCESS",
                     error_msg="no extractable text after chunking",
                     chunk_count=0,
                 )
@@ -106,8 +110,13 @@ class IngestProcessor:
             )
 
             # ---- 步骤 7: 更新成功 ----
-            self._db.update_status(task.task_id, "SUCCESS", chunk_count=len(chunks))
-            log.info("task_id=%s SUCCESS chunks=%s", task.task_id, len(chunks))
+            success = self._mark_success(
+                task.task_id,
+                chunk_count=len(chunks),
+                cleanup=lambda: self._es.delete_by_doc_id(index_name, task.task_id),
+            )
+            if success:
+                log.info("task_id=%s SUCCESS chunks=%s", task.task_id, len(chunks))
 
         except UnsupportedFileTypeError as e:
             # 不支持的 MIME 类型 → FAILED，不 re-raise（不是系统错误）
@@ -125,8 +134,80 @@ class IngestProcessor:
             raise
 
         finally:
+            self._stop_heartbeat(heartbeat_stop, heartbeat_thread)
             # 清理临时目录 —— 类似 Java 的 try-finally 关闭资源
             shutil.rmtree(tmp_root, ignore_errors=True)
+
+    def _start_heartbeat(self, task_id: str) -> tuple[threading.Event, threading.Thread]:
+        """启动任务心跳线程，定期刷新 PROCESSING 行的 updated_at。"""
+        stop = threading.Event()
+        interval = max(1, int(self._settings.fish_worker_heartbeat_seconds))
+        thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name=f"fish-worker-heartbeat-{task_id}",
+            args=(task_id, stop, interval),
+            daemon=True,
+        )
+        thread.start()
+        return stop, thread
+
+    def _stop_heartbeat(
+        self,
+        stop: threading.Event | None,
+        thread: threading.Thread | None,
+    ) -> None:
+        """停止任务心跳线程，避免处理结束后继续刷新 updated_at。"""
+        if stop is None or thread is None:
+            return
+        stop.set()
+        thread.join(timeout=2.0)
+
+    def _heartbeat_loop(self, task_id: str, stop: threading.Event, interval: int) -> None:
+        """心跳循环：仅当任务仍是 PROCESSING 时刷新更新时间。"""
+        try:
+            while not stop.wait(interval):
+                try:
+                    affected = self._db.touch(task_id)
+                    if affected == 0:
+                        log.warning(
+                            "task_id=%s heartbeat skipped because status is no longer PROCESSING",
+                            task_id,
+                        )
+                        return
+                except Exception:
+                    # 心跳失败不直接杀死处理流程；终态 CAS 会做最终保护。
+                    log.exception("task_id=%s heartbeat failed", task_id)
+        finally:
+            close = getattr(self._db, "close_current_thread_conn", None)
+            if callable(close):
+                close()
+
+    def _mark_success(
+        self,
+        task_id: str,
+        *,
+        error_msg: str | None = None,
+        chunk_count: int | None = None,
+        cleanup: Callable[[], None] | None = None,
+    ) -> bool:
+        """用 CAS 写 SUCCESS；若任务已不在 PROCESSING，可执行补偿清理后跳过成功日志。"""
+        affected = self._db.update_status(
+            task_id,
+            "SUCCESS",
+            error_msg=error_msg,
+            chunk_count=chunk_count,
+            expected_status="PROCESSING",
+        )
+        if affected:
+            return True
+
+        if cleanup is not None:
+            try:
+                cleanup()
+            except Exception:
+                log.exception("task_id=%s cleanup after lost SUCCESS CAS failed", task_id)
+        log.warning("task_id=%s SUCCESS skipped because status is no longer PROCESSING", task_id)
+        return False
 
 
 # ----------- 任务数据类 -----------

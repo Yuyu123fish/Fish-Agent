@@ -110,6 +110,18 @@ class Settings(BaseSettings):
     )
     fish_worker_block_ms: int = Field(default=5000, validation_alias="FISH_WORKER_BLOCK_MS")
     fish_worker_health_port: int = Field(default=8091, validation_alias="FISH_WORKER_HEALTH_PORT")
+    fish_worker_heartbeat_seconds: int = Field(
+        default=30, validation_alias="FISH_WORKER_HEARTBEAT_SECONDS"
+    )
+    fish_worker_embed_max_retries: int = Field(
+        default=3, validation_alias="FISH_WORKER_EMBED_MAX_RETRIES"
+    )
+    fish_worker_embed_backoff_base: float = Field(
+        default=1.0, validation_alias="FISH_WORKER_EMBED_BACKOFF_BASE"
+    )
+    fish_worker_embed_backoff_max: float = Field(
+        default=30.0, validation_alias="FISH_WORKER_EMBED_BACKOFF_MAX"
+    )
 
     # ---- 校验器 & 派生属性 ----
 
