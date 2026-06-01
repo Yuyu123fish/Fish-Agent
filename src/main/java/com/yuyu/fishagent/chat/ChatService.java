@@ -178,11 +178,11 @@ public class ChatService {
             // ignore
         }
 
-        final List<Message> messages;
+        final BuildMessagesResult buildResult;
         try {
             // 1. 组装上下文：热路径仅读 L1(Redis)；L1/L2 均未命中才由协调器回源 L3 全量历史。
-            messages = buildMessages(sid, streamUserId, userInput);
-            messages.add(new UserMessage(userInput));
+            buildResult = buildMessages(sid, streamUserId, userInput);
+            buildResult.messages().add(new UserMessage(userInput));
         } catch (Exception e) {
             log.error("[ChatService] 组装上下文失败 sid={}", sid, e);
             releaseSseSlotOnce.run();
@@ -210,7 +210,7 @@ public class ChatService {
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
         //调用大模型流式推理
-        disposableRef[0] = chatAgent.stream(messages, sid).subscribe(
+        disposableRef[0] = chatAgent.stream(buildResult.messages(), sid).subscribe(
                 node -> handleNode(node, emitter, assistantBuf),
                 err -> {
                     log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
@@ -234,7 +234,8 @@ public class ChatService {
                         safeSend(emitter, "done", full);
                         emitter.complete();
                         triggerLongTermMemoryIngestion(streamUserId, sid, userInput);
-                        triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid);
+                        triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
+                                buildResult.skipMaintenanceCompression());
                     } finally {
                         UserContextHolder.clear();
                     }
@@ -256,7 +257,7 @@ public class ChatService {
      * @param userId    当前用户 ID（供 L2 文件实现分区；可能为 null）
      * @param userInput 本轮用户输入
      */
-    private List<Message> buildMessages(String sid, Long userId, String userInput) {
+    private BuildMessagesResult buildMessages(String sid, Long userId, String userInput) {
         List<Message> messages = new ArrayList<>();
         // 合并为单条 SystemMessage：Alibaba ReactAgent 还会在内部拼接系统位，多条 SystemMessage 会触发 AgentLlmNode 英文 WARN 且不利于模型解析。
         StringBuilder systemBlock = new StringBuilder();
@@ -269,8 +270,9 @@ public class ChatService {
         }
 
         // 三级读穿；冷会话才会调用 L3 加载器（运行在当前 Servlet 线程，UserContext 可用）。
-        ShortTermMemorySnapshot snapshot = shortTermMemoryService.loadForTurn(
+        ShortTermMemoryService.ShortTermMemoryLoadResult memoryResult = shortTermMemoryService.loadForTurnWithMetadata(
                 userId, sid, () -> memoryStore.load(sid));
+        ShortTermMemorySnapshot snapshot = memoryResult.snapshot();
         if (snapshot.summary() != null && !snapshot.summary().isBlank()) {
             if (!systemBlock.isEmpty()) {
                 systemBlock.append("\n\n---\n");
@@ -294,7 +296,13 @@ public class ChatService {
                 ? List.of() : snapshot.recentMessages();
         log.debug("[ChatService] 组装模型上下文 sid={}, contextWindowSize={}", sid, contextMessages.size());
         appendReplayableMessages(messages, contextMessages);
-        return messages;
+        return new BuildMessagesResult(messages, memoryResult.compressedOnColdPath());
+    }
+
+    /**
+     * 模型上下文构建结果。布尔标志用于避免冷路径已同步压缩后，onComplete 维护任务再次压缩。
+     */
+    private record BuildMessagesResult(List<Message> messages, boolean skipMaintenanceCompression) {
     }
 
     /**
@@ -345,17 +353,27 @@ public class ChatService {
      * @param userId       当前用户 ID（供 L2 文件实现分区）
      * @param sid          会话 ID
      */
-    private void triggerShortTermMaintenance(UserContext userSnapshot, Long userId, String sid) {
+    private void triggerShortTermMaintenance(UserContext userSnapshot, Long userId, String sid,
+                                             boolean skipCompressionThisTurn) {
         CompletableFuture.runAsync(() -> {
             if (userSnapshot != null) {
                 UserContextHolder.set(userSnapshot);
             }
             try {
-                List<ChatMessageDTO> full = memoryStore.load(sid);
-                if (full.size() >= memoryProperties.getSummaryTriggerThreshold()) {
-                    log.debug("[ChatService] 触发异步记忆压缩 sid={}, historySize={}, threshold={}",
-                            sid, full.size(), memoryProperties.getSummaryTriggerThreshold());
-                    memoryCompressionService.compress(new MemoryCompressionRequest(sid, full));
+                if (skipCompressionThisTurn) {
+                    log.debug("[ChatService] 本轮冷路径已同步压缩，跳过异步重复压缩 sid={}", sid);
+                    shortTermMemoryService.refreshSnapshotFromL1(userId, sid);
+                    return;
+                }
+                if (shortTermMemoryService.shouldLoadFullHistoryForMaintenance(sid)) {
+                    List<ChatMessageDTO> full = memoryStore.load(sid);
+                    if (full.size() >= memoryProperties.getSummaryTriggerThreshold()) {
+                        log.debug("[ChatService] 触发异步记忆压缩 sid={}, historySize={}, threshold={}",
+                                sid, full.size(), memoryProperties.getSummaryTriggerThreshold());
+                        memoryCompressionService.compress(new MemoryCompressionRequest(sid, full));
+                    }
+                } else {
+                    log.debug("[ChatService] L1 窗口远低于压缩阈值，跳过 L3 全量读取 sid={}", sid);
                 }
                 shortTermMemoryService.refreshSnapshotFromL1(userId, sid);
             } catch (Exception e) {

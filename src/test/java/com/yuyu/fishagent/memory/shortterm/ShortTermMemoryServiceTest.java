@@ -17,6 +17,7 @@ import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.tuple;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -76,9 +77,11 @@ class ShortTermMemoryServiceTest {
         when(l1.load("sid")).thenReturn(emptySnapshot(), recomputed);
         when(l2.load(7L, "sid")).thenReturn(emptySnapshot());
 
-        ShortTermMemorySnapshot result = service.loadForTurn(7L, "sid", () -> fullHistory);
+        ShortTermMemoryService.ShortTermMemoryLoadResult result =
+                service.loadForTurnWithMetadata(7L, "sid", () -> fullHistory);
 
-        assertThat(result).isSameAs(recomputed);
+        assertThat(result.snapshot()).isSameAs(recomputed);
+        assertThat(result.compressedOnColdPath()).isTrue();
         ArgumentCaptor<MemoryCompressionRequest> requestCaptor = ArgumentCaptor.forClass(MemoryCompressionRequest.class);
         verify(compression).compress(requestCaptor.capture());
         assertThat(requestCaptor.getValue().getSessionId()).isEqualTo("sid");
@@ -111,8 +114,27 @@ class ShortTermMemoryServiceTest {
         ArgumentCaptor<List<ChatMessageDTO>> windowCaptor = ArgumentCaptor.forClass(List.class);
         verify(l1).save(eq("sid"), eq("summary"), windowCaptor.capture());
         assertThat(windowCaptor.getValue())
-                .extracting(ChatMessageDTO::getContent)
-                .containsExactly("message-3", "u4", "a4");
+                .extracting(ChatMessageDTO::getRole, ChatMessageDTO::getContent)
+                .containsExactly(
+                        tuple("user", "message-3"),
+                        tuple("user", "u4"),
+                        tuple("assistant", "a4"));
+    }
+
+    @Test
+    void shouldLoadFullHistoryForMaintenanceSkipsWhenWindowIsFarBelowThreshold() {
+        when(l1.load("sid")).thenReturn(new ShortTermMemorySnapshot("", List.of(msg("user", "u1"))));
+
+        assertThat(service.shouldLoadFullHistoryForMaintenance("sid")).isFalse();
+    }
+
+    @Test
+    void shouldLoadFullHistoryForMaintenanceLoadsWhenSummaryExistsOrWindowApproachesThreshold() {
+        when(l1.load("with-summary")).thenReturn(new ShortTermMemorySnapshot("summary", List.of()));
+        when(l1.load("near-threshold")).thenReturn(new ShortTermMemorySnapshot("", messages(3)));
+
+        assertThat(service.shouldLoadFullHistoryForMaintenance("with-summary")).isTrue();
+        assertThat(service.shouldLoadFullHistoryForMaintenance("near-threshold")).isTrue();
     }
 
     @Test

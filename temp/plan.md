@@ -974,3 +974,15 @@ Expected: BUILD SUCCESS,无失败用例。
   - `mvn -q -DskipTests compile`：通过。
   - `mvn -q -Dtest=ShortTermMemoryServiceTest test`：通过。
   - `mvn -q clean test`：通过。该命令需临时设置 `DASHSCOPE_API_KEY=dummy` / `SPRING_AI_DASHSCOPE_API_KEY=dummy`，仅用于让 SpringBoot 上下文测试完成 DashScope Embedding Bean 初始化，测试过程未实际调用 embedding API。
+
+---
+
+## 审查修正记录（Codex 2026-06-01）
+
+- **修正测试断言中的 `createdAt` 风险**：`appendTurnToL1` 单测改为按 `role + content` 断言窗口内容，不再依赖 `ChatMessageDTO.equals` 的完整字段比较，避免 `createdAt` 不同导致误红。
+- **避免冷路径首轮双重压缩**：`ShortTermMemoryService` 新增 `ShortTermMemoryLoadResult` 与 `loadForTurnWithMetadata(...)`，在冷会话同步重算摘要后返回 `compressedOnColdPath=true`。`ChatService` 将该标志传入异步短期维护任务，本轮只 `refreshSnapshotFromL1`，不再重复读取 L3 并调用压缩模型。
+- **减少阈值远未达到时的 L3 全量读**：`ShortTermMemoryService.shouldLoadFullHistoryForMaintenance(...)` 会先看 L1 快照。若没有摘要且 L1 窗口大小低于 `summaryTriggerThreshold / 2`，异步维护跳过 L3 全量历史读取，只做 L1 → L2 快照刷新。未采用 `chat_metadata.message_count` 方案，因为当前 SQL DDL 与实体没有实际 `message_count` 列，贸然加入会引入数据库迁移范围。
+- **保留 append 与 compress 的低概率竞态为已知风险**：`appendTurnToL1` 仍是 L1 的 read-modify-write，极端情况下可能用旧 summary 覆盖刚写入的新 summary。该问题影响范围是摘要最多回退一轮，后续维护可修复；本轮不引入 Redis Lua 原子窗口合并，避免把 L1 存储格式和协调器接口进一步耦合。
+- **验证更新**：
+  - `mvn -q -Dtest=ShortTermMemoryServiceTest test`：通过。
+  - `mvn -q -DskipTests compile`：通过。

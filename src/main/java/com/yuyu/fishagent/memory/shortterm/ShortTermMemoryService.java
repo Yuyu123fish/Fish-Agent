@@ -32,6 +32,15 @@ public class ShortTermMemoryService {
     private final MemoryProperties properties;
 
     /**
+     * 本轮短期记忆加载结果。
+     *
+     * @param snapshot             可直接注入模型上下文的短期记忆快照
+     * @param compressedOnColdPath 本轮是否已在冷路径同步重算过摘要
+     */
+    public record ShortTermMemoryLoadResult(ShortTermMemorySnapshot snapshot, boolean compressedOnColdPath) {
+    }
+
+    /**
      * 读穿：返回本轮对话使用的短期记忆快照。运行在 Servlet 线程（UserContext 可用）。
      *
      * @param userId            会话所属用户（供 L2 文件实现分区）
@@ -40,9 +49,21 @@ public class ShortTermMemoryService {
      */
     public ShortTermMemorySnapshot loadForTurn(Long userId, String sessionId,
                                                Supplier<List<ChatMessageDTO>> fullHistoryLoader) {
+        return loadForTurnWithMetadata(userId, sessionId, fullHistoryLoader).snapshot();
+    }
+
+    /**
+     * 读穿并返回本轮加载元信息。ChatService 用 {@code compressedOnColdPath} 避免冷会话首轮重复压缩。
+     *
+     * @param userId            会话所属用户（供 L2 文件实现分区）
+     * @param sessionId         会话 ID
+     * @param fullHistoryLoader 冷会话时才会被调用的 L3 全量历史加载器
+     */
+    public ShortTermMemoryLoadResult loadForTurnWithMetadata(Long userId, String sessionId,
+                                                             Supplier<List<ChatMessageDTO>> fullHistoryLoader) {
         ShortTermMemorySnapshot l1Snap = safeSnapshot(l1.load(sessionId));
         if (isNonEmpty(l1Snap)) {
-            return l1Snap;
+            return new ShortTermMemoryLoadResult(l1Snap, false);
         }
 
         if (properties.getSnapshot().isEnabled()) {
@@ -50,13 +71,13 @@ public class ShortTermMemoryService {
             if (isNonEmpty(l2Snap)) {
                 l1.save(sessionId, safeSummary(l2Snap), safeMessages(l2Snap));
                 log.debug("[ShortTermMemoryService] L2 命中并回填 L1 sid={}", sessionId);
-                return l2Snap;
+                return new ShortTermMemoryLoadResult(l2Snap, false);
             }
         }
 
         List<ChatMessageDTO> full = fullHistoryLoader.get();
         if (full == null || full.isEmpty()) {
-            return empty();
+            return new ShortTermMemoryLoadResult(empty(), false);
         }
 
         if (properties.getSnapshot().isRecomputeOnCold()
@@ -68,7 +89,7 @@ public class ShortTermMemoryService {
                     l2.save(userId, sessionId, recomputed);
                 }
                 log.debug("[ShortTermMemoryService] 冷会话同步重算完成 sid={}, historySize={}", sessionId, full.size());
-                return recomputed;
+                return new ShortTermMemoryLoadResult(recomputed, true);
             } catch (Exception e) {
                 log.warn("[ShortTermMemoryService] 冷会话重算失败，降级为窗口 sid={}: {}", sessionId, e.getMessage());
             }
@@ -81,7 +102,7 @@ public class ShortTermMemoryService {
             l2.save(userId, sessionId, snapshot);
         }
         log.debug("[ShortTermMemoryService] 冷会话窗口降级 sid={}, windowSize={}", sessionId, window.size());
-        return snapshot;
+        return new ShortTermMemoryLoadResult(snapshot, false);
     }
 
     /**
@@ -111,6 +132,19 @@ public class ShortTermMemoryService {
             return;
         }
         l2.save(userId, sessionId, snapshot);
+    }
+
+    /**
+     * 判断异步维护是否值得回源 L3 全量历史。
+     * <p>没有摘要且 L1 窗口还远低于压缩阈值时，跳过 L3 全量读，只刷新 L2 快照即可。</p>
+     */
+    public boolean shouldLoadFullHistoryForMaintenance(String sessionId) {
+        ShortTermMemorySnapshot snapshot = safeSnapshot(l1.load(sessionId));
+        if (snapshot.summary() != null && !snapshot.summary().isBlank()) {
+            return true;
+        }
+        int halfThreshold = Math.max(1, properties.getSummaryTriggerThreshold() / 2);
+        return safeMessages(snapshot).size() >= halfThreshold;
     }
 
     /**
