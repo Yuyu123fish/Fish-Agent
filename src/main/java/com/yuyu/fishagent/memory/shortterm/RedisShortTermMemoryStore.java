@@ -95,6 +95,25 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
     }
 
     /**
+     * 删除该会话的摘要与窗口两个 key。Redis 不可用时静默跳过。
+     */
+    @Override
+    public void clear(String sessionId) {
+        StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
+        if (redisTemplate == null) {
+            log.debug("[RedisShortTermMemoryStore] RedisTemplate 不可用，跳过短期记忆删除 sid={}", sessionId);
+            return;
+        }
+        try {
+            redisTemplate.delete(summaryKey(sessionId));
+            redisTemplate.delete(messagesKey(sessionId));
+            log.debug("[RedisShortTermMemoryStore] 短期记忆已删除 sid={}", sessionId);
+        } catch (Exception e) {
+            log.warn("[RedisShortTermMemoryStore] 删除短期记忆失败 sid={}: {}", sessionId, e.getMessage());
+        }
+    }
+
+    /**
      * 生成短期摘要 key，按 session 维度隔离。
      */
     private String summaryKey(String sessionId) {

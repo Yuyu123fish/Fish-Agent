@@ -33,6 +33,18 @@ public class MemoryProperties {
     }
 
     /**
+     * 短期记忆对象存储快照子配置（{@code fish.memory.snapshot.*}）。
+     * <p>作为 Redis 失效（TTL 到期 / 不可用）时的兜底兜源。</p>
+     */
+    @Data
+    public static class SnapshotProperties {
+        /** 是否启用 L2 对象存储快照兜底。false 时仅用 Redis，Redis 失效则回退全量历史窗口、摘要丢失。 */
+        private boolean enabled = true;
+        /** 冷会话（L1+L2 均未命中）且历史达到压缩阈值时，是否同步重算摘要（会阻塞首字 1-5s）。 */
+        private boolean recomputeOnCold = true;
+    }
+
+    /**
      * 短期记忆保留的最近消息数量。
      */
     private int shortTermWindowSize = 20;
@@ -71,4 +83,9 @@ public class MemoryProperties {
      * {@code fish.memory.chat}：记忆链路专用 Chat 模型参数。
      */
     private MemoryChatProperties chat = new MemoryChatProperties();
+
+    /**
+     * {@code fish.memory.snapshot}：短期记忆对象存储快照兜底参数。
+     */
+    private SnapshotProperties snapshot = new SnapshotProperties();
 }

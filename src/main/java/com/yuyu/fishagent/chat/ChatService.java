@@ -7,7 +7,7 @@ import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
-import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryStore;
+import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
 import com.yuyu.fishagent.memory.LongTermMemoryIngestionService;
 import com.yuyu.fishagent.memory.MemoryCompressionService;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
@@ -64,8 +64,8 @@ public class ChatService {
     private final ChatAgent chatAgent;
     /** 会话历史的持久化存储（文件系统），用于完整历史的加载与落盘。 */
     private final ChatMemoryStore memoryStore;
-    /** Redis 短期记忆存储，存放对话摘要和最近 N 条窗口消息。 */
-    private final ShortTermMemoryStore shortTermMemoryStore;
+    /** 短期记忆三级协调器，负责 L1/L2/L3 的读穿和写穿。 */
+    private final ShortTermMemoryService shortTermMemoryService;
     /** 记忆压缩服务，当对话轮次超过阈值时异步生成短期摘要写入 Redis。 */
     private final MemoryCompressionService memoryCompressionService;
     /** 长期记忆主动录入服务，每轮用户输入后异步判断是否将事实写入 ES。 */
@@ -110,7 +110,9 @@ public class ChatService {
      * @param sessionId 会话 ID
      */
     public void deleteSession(String sessionId) {
+        Long uid = UserContextHolder.currentUserIdOrNull();
         memoryStore.clear(sessionId);
+        shortTermMemoryService.clear(uid, sessionId);
     }
 
     /**
@@ -176,12 +178,10 @@ public class ChatService {
             // ignore
         }
 
-        final List<ChatMessageDTO> historyDtos;
         final List<Message> messages;
         try {
-            // 1. 组装上下文：文件历史仍是事实来源，模型上下文使用“短期摘要 + 滑动窗口”控制长度。
-            historyDtos = memoryStore.load(sid);
-            messages = buildMessages(sid, historyDtos, userInput);
+            // 1. 组装上下文：热路径仅读 L1(Redis)；L1/L2 均未命中才由协调器回源 L3 全量历史。
+            messages = buildMessages(sid, streamUserId, userInput);
             messages.add(new UserMessage(userInput));
         } catch (Exception e) {
             log.error("[ChatService] 组装上下文失败 sid={}", sid, e);
@@ -222,8 +222,11 @@ public class ChatService {
                         UserContextHolder.set(streamUserSnapshot);
                     }
                     try {
+                        ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
+                        ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
                         try {
                             persist(sid, userInput, full);
+                            shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
                         } catch (Exception e) {
                             log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
                             // persist 失败不阻塞 emitter 关闭
@@ -231,7 +234,7 @@ public class ChatService {
                         safeSend(emitter, "done", full);
                         emitter.complete();
                         triggerLongTermMemoryIngestion(streamUserId, sid, userInput);
-                        triggerMemoryCompressionIfNeeded(sid, historyDtos, userInput, full);
+                        triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid);
                     } finally {
                         UserContextHolder.clear();
                     }
@@ -244,12 +247,16 @@ public class ChatService {
     /* ---------------- private helpers ---------------- */
 
     /**
-     * 构造模型上下文。短期记忆存在时优先使用 Redis 中的摘要和窗口；否则从文件历史截取最近 N 条。
-     * <p>每条请求在合并系统段<strong>最前</strong>注入服务器当前时间（JVM 默认时区），与 {@code get_current_datetime} 不传参时一致。</p>
-     * <p>RAG 长期记忆片段插在短期摘要之后、滑动窗口之前，便于模型先看到压缩摘要再看到可引用事实，最后进入多轮语气上下文。
-     * 用户消息仍以原始 {@code userInput} 入模（见 streamChat），避免历史文件与前端展示被改写。</p>
+     * 构造模型上下文。短期记忆经 {@link ShortTermMemoryService} 三级读穿获取：
+     * L1(Redis) 命中直接用；否则 L2 快照回填；再否则冷会话回源 L3 全量历史（必要时同步重算摘要）。
+     * <p>每条请求在合并系统段<strong>最前</strong>注入服务器当前时间。RAG 长期记忆片段插在短期摘要之后、滑动窗口之前。
+     * 用户消息仍以原始 {@code userInput} 入模（见 streamChat）。</p>
+     *
+     * @param sid       会话 ID
+     * @param userId    当前用户 ID（供 L2 文件实现分区；可能为 null）
+     * @param userInput 本轮用户输入
      */
-    private List<Message> buildMessages(String sid, List<ChatMessageDTO> historyDtos, String userInput) {
+    private List<Message> buildMessages(String sid, Long userId, String userInput) {
         List<Message> messages = new ArrayList<>();
         // 合并为单条 SystemMessage：Alibaba ReactAgent 还会在内部拼接系统位，多条 SystemMessage 会触发 AgentLlmNode 英文 WARN 且不利于模型解析。
         StringBuilder systemBlock = new StringBuilder();
@@ -261,7 +268,9 @@ public class ChatService {
             systemBlock.append(instruction);
         }
 
-        ShortTermMemorySnapshot snapshot = shortTermMemoryStore.load(sid);
+        // 三级读穿；冷会话才会调用 L3 加载器（运行在当前 Servlet 线程，UserContext 可用）。
+        ShortTermMemorySnapshot snapshot = shortTermMemoryService.loadForTurn(
+                userId, sid, () -> memoryStore.load(sid));
         if (snapshot.summary() != null && !snapshot.summary().isBlank()) {
             if (!systemBlock.isEmpty()) {
                 systemBlock.append("\n\n---\n");
@@ -281,12 +290,9 @@ public class ChatService {
 
         messages.add(new SystemMessage(systemBlock.toString()));
 
-        // 多轮语气：优先用 Redis 中的「最近窗口」；否则从落盘全量历史尾部截取
-        List<ChatMessageDTO> contextMessages = snapshot.recentMessages() == null || snapshot.recentMessages().isEmpty()
-                ? recentMessages(historyDtos, memoryProperties.getShortTermWindowSize())
-                : snapshot.recentMessages();
-        log.debug("[ChatService] 组装模型上下文 sid={}, historySize={}, contextWindowSize={}",
-                sid, historyDtos.size(), contextMessages.size());
+        List<ChatMessageDTO> contextMessages = snapshot.recentMessages() == null
+                ? List.of() : snapshot.recentMessages();
+        log.debug("[ChatService] 组装模型上下文 sid={}, contextWindowSize={}", sid, contextMessages.size());
         appendReplayableMessages(messages, contextMessages);
         return messages;
     }
@@ -331,59 +337,31 @@ public class ChatService {
     }
 
     /**
-     * 从全量历史中截取最近 {@code windowSize} 条消息，作为模型的多轮上下文窗口。
-     * <p>
-     * 当 Redis 中不存在短期记忆窗口时作为降级策略使用。
-     * 若历史不足 {@code windowSize} 条，则返回全部。
-     * </p>
+     * 对话结束后的短期记忆异步维护：读 L3 全量 → 达阈值则压缩更新 L1 摘要 → 把 L1 刷入 L2 快照。
+     * <p>运行在异步线程，必须回放 {@link UserContext}：{@link com.yuyu.fishagent.chat.history.RustFsChatMemoryStore#load}
+     * 会校验归属并从 ThreadLocal 取 userId。</p>
      *
-     * @param chatHistory 全量历史消息列表（按时间顺序）
-     * @param windowSize  滑动窗口大小（配置项 {@code memory.short-term-window-size}）
-     * @return 最近 N 条消息的副本
+     * @param userSnapshot 进入流式前快照的用户上下文（可能为 null）
+     * @param userId       当前用户 ID（供 L2 文件实现分区）
+     * @param sid          会话 ID
      */
-    private List<ChatMessageDTO> recentMessages(List<ChatMessageDTO> chatHistory, int windowSize) {
-        if (chatHistory == null || chatHistory.isEmpty() || windowSize <= 0) {
-            return List.of();
-        }
-        int fromIndex = Math.max(0, chatHistory.size() - windowSize);
-        return new ArrayList<>(chatHistory.subList(fromIndex, chatHistory.size()));
-    }
-
-    /**
-     * 当累积的对话轮次超过配置阈值时，异步触发短期记忆压缩。
-     * <p>
-     * 压缩会再次调用 LLM 模型，因此放在 {@link CompletableFuture#runAsync} 中执行，
-     * 避免阻塞主流程和 SSE {@code done} 事件返回。
-     * <br>
-     * 触发条件：已落盘历史 + 本轮 user/assistant 消息总数 ≥ {@code memory.summary-trigger-threshold}。
-     * </p>
-     *
-     * @param sid         会话 ID
-     * @param historyDtos 本轮之前已落盘的历史消息
-     * @param userInput   本轮用户输入
-     * @param assistant   本轮助手完整回复（可能为空白）
-     */
-    private void triggerMemoryCompressionIfNeeded(String sid, List<ChatMessageDTO> historyDtos, String userInput, String assistant) {
-        List<ChatMessageDTO> fullHistory = new ArrayList<>(historyDtos.size() + 2);
-        fullHistory.addAll(historyDtos);
-        fullHistory.add(ChatMessageDTO.of("user", userInput));
-        if (assistant != null && !assistant.isBlank()) {
-            fullHistory.add(ChatMessageDTO.of("assistant", assistant));
-        }
-        if (fullHistory.size() < memoryProperties.getSummaryTriggerThreshold()) {
-            log.debug("[ChatService] 未触发记忆压缩 sid={}, historySize={}, threshold={}",
-                    sid, fullHistory.size(), memoryProperties.getSummaryTriggerThreshold());
-            return;
-        }
-
-        // 压缩会再次调用模型，放到异步任务中，避免拖慢 SSE done 事件返回。
-        log.debug("[ChatService] 触发异步记忆压缩 sid={}, historySize={}, threshold={}",
-                sid, fullHistory.size(), memoryProperties.getSummaryTriggerThreshold());
+    private void triggerShortTermMaintenance(UserContext userSnapshot, Long userId, String sid) {
         CompletableFuture.runAsync(() -> {
+            if (userSnapshot != null) {
+                UserContextHolder.set(userSnapshot);
+            }
             try {
-                memoryCompressionService.compress(new MemoryCompressionRequest(sid, fullHistory));
+                List<ChatMessageDTO> full = memoryStore.load(sid);
+                if (full.size() >= memoryProperties.getSummaryTriggerThreshold()) {
+                    log.debug("[ChatService] 触发异步记忆压缩 sid={}, historySize={}, threshold={}",
+                            sid, full.size(), memoryProperties.getSummaryTriggerThreshold());
+                    memoryCompressionService.compress(new MemoryCompressionRequest(sid, full));
+                }
+                shortTermMemoryService.refreshSnapshotFromL1(userId, sid);
             } catch (Exception e) {
-                log.warn("[ChatService] 记忆压缩失败 sid={}: {}", sid, e.getMessage());
+                log.warn("[ChatService] 短期记忆维护失败 sid={}: {}", sid, e.getMessage());
+            } finally {
+                UserContextHolder.clear();
             }
         });
     }

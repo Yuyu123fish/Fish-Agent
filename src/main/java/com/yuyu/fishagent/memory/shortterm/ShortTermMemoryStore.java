@@ -26,4 +26,11 @@ public interface ShortTermMemoryStore {
      * @return 短期摘要与最近消息窗口
      */
     ShortTermMemorySnapshot load(String sessionId);
+
+    /**
+     * 删除某会话的短期记忆（摘要 + 最近窗口）。存储不可用时应静默跳过。
+     *
+     * @param sessionId 会话 ID
+     */
+    void clear(String sessionId);
 }
