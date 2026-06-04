@@ -26,6 +26,7 @@ from fish_worker.chunker.text_chunker import chunk_elements
 from fish_worker.deps import WorkerContext
 from fish_worker.exceptions import UnsupportedFileTypeError
 from fish_worker.parser.factory import ParserFactory
+from fish_worker.parser.text_cleaner import clean_elements
 
 log = logging.getLogger(__name__)
 
@@ -60,6 +61,9 @@ class IngestProcessor:
             # ---- 步骤 2: 按 MIME 类型选择解析器 ----
             parser = ParserFactory.get(content_type, task.file_name)
             elements = parser.parse(content, task.file_name or "upload.pdf", tmp_dir=tmp_root)
+
+            # ---- 步骤 2.5: 文本清洗（对所有格式的解析结果统一执行）----
+            elements = clean_elements(elements)
 
             # ---- 步骤 3: 空结果处理（如纯图片扫描件，unstructured fast 模式无法提取文字）----
             if not elements:

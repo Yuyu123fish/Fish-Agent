@@ -99,6 +99,72 @@ class IngestProcessorCasTest(unittest.TestCase):
         )
         self.assertIn(("task-1", "SUCCESS", "PROCESSING"), db.calls)
 
+    def test_cleans_parser_elements_before_chunking(self) -> None:
+        db = FakeDb()
+        es = FakeEs()
+        task = IngestTask(
+            task_id="task-2",
+            minio_path="docs/a.pdf",
+            scope_type="PRIVATE",
+            user_id="user-1",
+            file_name="a.pdf",
+        )
+        observed_texts: list[str] = []
+
+        def fake_chunk_elements(elements: list[RawElement], **kwargs) -> list[TextChunk]:
+            observed_texts.extend(elem.text for elem in elements)
+            return [TextChunk(text="clean chunk", chunk_index=0, page=1, token_count=2)]
+
+        with (
+            patch(
+                "fish_worker.processor.ParserFactory.get",
+                return_value=type(
+                    "DirtyParser",
+                    (),
+                    {
+                        "parse": lambda self, content, filename, tmp_dir=None: [
+                            RawElement(text="ﬁle(cid:9)。。。", page=1, element_type="Text")
+                        ]
+                    },
+                )(),
+            ),
+            patch("fish_worker.processor.chunk_elements", side_effect=fake_chunk_elements),
+        ):
+            IngestProcessor(fake_ctx(db, es)).process(task)
+
+        self.assertEqual(["file。"], observed_texts)
+
+    def test_marks_success_when_cleaning_removes_all_elements(self) -> None:
+        db = FakeDb()
+        es = FakeEs()
+        task = IngestTask(
+            task_id="task-3",
+            minio_path="docs/a.pdf",
+            scope_type="PRIVATE",
+            user_id="user-1",
+            file_name="a.pdf",
+        )
+
+        with (
+            patch(
+                "fish_worker.processor.ParserFactory.get",
+                return_value=type(
+                    "ControlOnlyParser",
+                    (),
+                    {
+                        "parse": lambda self, content, filename, tmp_dir=None: [
+                            RawElement(text="\x00\u200b", page=1, element_type="Text")
+                        ]
+                    },
+                )(),
+            ),
+            patch("fish_worker.processor.chunk_elements") as chunk_mock,
+        ):
+            IngestProcessor(fake_ctx(db, es)).process(task)
+
+        chunk_mock.assert_not_called()
+        self.assertIn(("task-3", "SUCCESS", "PROCESSING"), db.calls)
+
 
 if __name__ == "__main__":
     unittest.main()
