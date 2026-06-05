@@ -1,10 +1,12 @@
 package com.yuyu.fishagent.rag.pipeline.recall;
 
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
+import com.yuyu.fishagent.rag.pipeline.fusion.RagScoreFusion;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.rag.config.RagProperties;
+import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -68,15 +70,26 @@ public final class RagRecall {
         return mergeFlatByMaxScore(flat, maxFacts);
     }
 
+    /**
+     * 召回命中去重 key：优先使用 ES 文档 id；无 id 时使用内容 hash。
+     * <p>旧的 max-score 合并与新的 RRF 融合共用这一规则，避免两条路径对“同一条命中”的判断不一致。</p>
+     */
+    public static String dedupKey(RecallHit hit) {
+        if (hit == null || hit.content() == null || hit.content().isBlank()) {
+            return null;
+        }
+        return hit.id() != null && !hit.id().isBlank()
+                ? hit.id()
+                : "hash:" + Integer.toHexString(Objects.hash(hit.content()));
+    }
+
     public static List<RecallHit> mergeFlatByMaxScore(List<RecallHit> flat, int maxFacts) {
         Map<String, RecallHit> best = new LinkedHashMap<>();
         for (RecallHit h : flat) {
-            if (h == null || h.content() == null || h.content().isBlank()) {
+            String key = dedupKey(h);
+            if (key == null) {
                 continue;
             }
-            String key = h.id() != null && !h.id().isBlank()
-                    ? h.id()
-                    : "hash:" + Integer.toHexString(Objects.hash(h.content()));
             best.merge(key, h, (a, b) -> a.score() >= b.score() ? a : b);
         }
         return best.values().stream()
@@ -98,6 +111,7 @@ public final class RagRecall {
         private final DocumentSearcher publicKnowledgeSearcher;
         private final ObjectProvider<ElasticsearchOperations> operationsProvider;
         private final ExecutorService recallExecutor;
+        private final RagReranker reranker;
 
         public DefaultAugmentation(
                 RagProperties ragProperties,
@@ -107,7 +121,8 @@ public final class RagRecall {
                 DocumentSearcher userKnowledgeSearcher,
                 DocumentSearcher publicKnowledgeSearcher,
                 ObjectProvider<ElasticsearchOperations> operationsProvider,
-                @Qualifier("ragRecallExecutor") ExecutorService recallExecutor) {
+                @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
+                RagReranker reranker) {
             this.ragProperties = ragProperties;
             this.queryRewriter = queryRewriter;
             this.subQueryExpander = subQueryExpander;
@@ -116,6 +131,7 @@ public final class RagRecall {
             this.publicKnowledgeSearcher = publicKnowledgeSearcher;
             this.operationsProvider = operationsProvider;
             this.recallExecutor = recallExecutor;
+            this.reranker = reranker;
         }
 
         @Override
@@ -218,14 +234,28 @@ public final class RagRecall {
             }
 
             int maxFacts = Math.max(1, ragProperties.getRender().getMaxInjectedFacts());
-            List<RecallHit> merged = mergeByMaxScore(batches, maxFacts);
-            if (merged.isEmpty()) {
+            int poolSize = Math.max(maxFacts, ragProperties.getFusion().getCandidatePoolSize());
+
+            // 候选池阶段：RRF 统一文本路 / 向量路的排名尺度；关闭时回退旧 max-score 合并。
+            List<RecallHit> candidates = ragProperties.getFusion().isEnabled()
+                    ? RagScoreFusion.fuseByRrf(batches, ragProperties.getFusion().getRrfK(), poolSize)
+                    : mergeByMaxScore(batches, poolSize);
+            if (candidates.isEmpty()) {
                 log.debug("[RagRecall] 无召回命中 sid={}", sessionId);
                 return Optional.empty();
             }
 
-            String block = renderBlock(merged);
-            log.debug("[RagRecall] 注入 sid={}, hits={}, blockLen={}", sessionId, merged.size(), block.length());
+            // 精排阶段：Reranker 内部封装关闭 / 无 Key / 异常降级，编排层保持直线流程。
+            int topN = Math.min(maxFacts, Math.max(1, ragProperties.getRerank().getTopN()));
+            List<RecallHit> finalHits = reranker.rerank(textForExpandAndVector, candidates, topN);
+            if (finalHits.isEmpty()) {
+                log.debug("[RagRecall] 精排后无命中 sid={}", sessionId);
+                return Optional.empty();
+            }
+
+            String block = renderBlock(finalHits);
+            log.debug("[RagRecall] 注入 sid={}, candidatePool={}, finalHits={}, blockLen={}",
+                    sessionId, candidates.size(), finalHits.size(), block.length());
             return Optional.of(block);
         }
 

@@ -31,6 +31,12 @@ public class RagProperties {
     /** 写入系统消息时的截断策略。 */
     private Render render = new Render();
 
+    /** RRF 分数融合（统一 BM25 / cosine 排名）。 */
+    private Fusion fusion = new Fusion();
+
+    /** Cross-Encoder 精排。 */
+    private Rerank rerank = new Rerank();
+
     /** CHAT_MODEL 模式下的采样温度（若底层实现忽略则仅依赖 Prompt）。 */
     private double rewriteTemperature = 0.1;
 
@@ -59,14 +65,14 @@ public class RagProperties {
         /** 分词后片段最短字符数，过滤过短噪声。 */
         private int minTokenChars = 1;
 
-        /** 每个子查询在 ES 侧的 size / k。 */
-        private int perSubquerySize = 5;
+        /** 每个子查询在 ES 侧的 size / k。v3.4 扩大候选池：5 → 10。 */
+        private int perSubquerySize = 10;
 
         /** 是否对用于检索的句子再做一条 kNN（需 EmbeddingModel）。 */
         private boolean vectorLegEnabled = true;
 
-        /** kNN 的 num_candidates，建议 ≥ perSubquerySize。 */
-        private int knnNumCandidates = 80;
+        /** kNN 的 num_candidates，建议 ≥ perSubquerySize。v3.4 扩大候选池：80 → 120。 */
+        private int knnNumCandidates = 120;
     }
 
     @Data
@@ -77,5 +83,43 @@ public class RagProperties {
 
         /** 注入块总字符上限（含提示头）。 */
         private int maxInjectedChars = 4000;
+    }
+
+    @Data
+    public static class Fusion {
+
+        /** RRF 融合开关；false 时回退到旧的 max-score 合并。 */
+        private boolean enabled = true;
+
+        /** RRF 常数 k，标准值通常为 60。 */
+        private int rrfK = 60;
+
+        /** 融合后候选池大小，后续交给 Reranker 精排。 */
+        private int candidatePoolSize = 50;
+    }
+
+    @Data
+    public static class Rerank {
+
+        /** Rerank 开关；false 时直接返回候选池前 topN。 */
+        private boolean enabled = true;
+
+        /** DashScope Rerank 模型名。 */
+        private String model = "qwen3-rerank";
+
+        /** 精排后保留条数，最终仍受 render.max-injected-facts 约束。 */
+        private int topN = 8;
+
+        /** API 调用超时秒数。 */
+        private int timeoutSeconds = 5;
+
+        /** 失败时是否降级到融合结果。 */
+        private boolean fallbackOnError = true;
+
+        /** DashScope 服务根地址。 */
+        private String baseUrl = "https://dashscope.aliyuncs.com";
+
+        /** API Key；默认通过 yml 绑定 DASHSCOPE_API_KEY，为空时自动降级。 */
+        private String apiKey = "";
     }
 }

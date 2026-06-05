@@ -163,17 +163,31 @@ fish:
     rewrite-temperature: 0.1
     rewrite-max-tokens: 256
     rewrite-max-chars: 512
-    # 多查询召回
+    # 多查询召回（v3.4 扩大候选池）
     recall:
       max-sub-queries: 12
       min-token-chars: 1
-      per-subquery-size: 5
+      per-subquery-size: 10
       vector-leg-enabled: true
-      knn-num-candidates: 80
+      knn-num-candidates: 120
     # 结果渲染上限
     render:
       max-injected-facts: 8
       max-injected-chars: 4000
+    # RRF 分数融合（统一 BM25 / cosine 排名）
+    fusion:
+      enabled: ${FISH_RAG_FUSION_ENABLED:true}
+      rrf-k: 60
+      candidate-pool-size: 50
+    # DashScope Cross-Encoder 精排（复用 DASHSCOPE_API_KEY，无 Key 自动降级）
+    rerank:
+      enabled: ${FISH_RAG_RERANK_ENABLED:true}
+      model: ${FISH_RAG_RERANK_MODEL:qwen3-rerank}
+      top-n: 8
+      timeout-seconds: 5
+      fallback-on-error: true
+      base-url: https://dashscope.aliyuncs.com
+      api-key: ${DASHSCOPE_API_KEY:}
 
   # ── 外部工具 ───────────────────────────────────────────────
   tools:

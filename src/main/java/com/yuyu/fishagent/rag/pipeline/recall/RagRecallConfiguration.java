@@ -3,6 +3,8 @@ package com.yuyu.fishagent.rag.pipeline.recall;
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.rag.config.RagProperties;
+import com.yuyu.fishagent.rag.pipeline.rerank.DashScopeRagReranker;
+import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
@@ -25,6 +27,11 @@ public class RagRecallConfiguration {
     }
 
     @Bean
+    public RagReranker ragReranker(RagProperties ragProperties) {
+        return new DashScopeRagReranker(ragProperties);
+    }
+
+    @Bean
     public RagRecall.Augmentation longTermRagContextService(
             RagProperties ragProperties,
             RagQueryRewrite.QueryRewriter queryRewriter,
@@ -33,7 +40,8 @@ public class RagRecallConfiguration {
             UserKnowledgeElasticsearchSearcher userKnowledgeElasticsearchSearcher,
             PublicKnowledgeElasticsearchSearcher publicKnowledgeElasticsearchSearcher,
             ObjectProvider<ElasticsearchOperations> operationsProvider,
-            @Qualifier("ragRecallExecutor") ExecutorService ragRecallExecutor) {
+            @Qualifier("ragRecallExecutor") ExecutorService ragRecallExecutor,
+            RagReranker ragReranker) {
         return new RagRecall.DefaultAugmentation(
                 ragProperties,
                 queryRewriter,
@@ -42,6 +50,7 @@ public class RagRecallConfiguration {
                 userKnowledgeElasticsearchSearcher,
                 publicKnowledgeElasticsearchSearcher,
                 operationsProvider,
-                ragRecallExecutor);
+                ragRecallExecutor,
+                ragReranker);
     }
 }
