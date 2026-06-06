@@ -749,7 +749,9 @@ rag/pipeline/recall/
 | 疑似重复 | confidence > 0.9 标记 + 合并 | AI 多次提取可能重复，需去重机制 |
 | 空状态引导 | 引导页替代空白 | 新用户首次进入无卡片时会流失 |
 | 对话加载策略 | 分级：短对话原文 / 长对话摘要+近期 | 保护 LLM 上下文窗口不被挤爆 |
-| 知识库切片可视化 | KnowledgeView 内「查看切片」侧面板 | 让用户看到文档解析后的实际切片内容 |
+| 知识库切片可视化 | 两级结构（概览→主题分组→切片）+ 切片↔卡片双向关联 | 避免切片数量爆炸，建立原始知识与结构化知识的桥梁 |
+| 切片主题分组 | 切片 embedding → K-Means 聚类 → 缓存结果 | 无额外存储，基于现有 embedding 动态计算 |
+| 切片↔卡片关联 | 双向 embedding 向量检索（动态计算） | 无额外存储，关联自动随卡片增减而更新 |
 
 ---
 
@@ -757,97 +759,219 @@ rag/pipeline/recall/
 
 ### 10.1 背景
 
-用户上传文档后，系统将其解析为切片（chunks）存入 ES。但用户目前只能看到"处理成功，120 个切片"这样的抽象信息，无法了解切片的实际内容。增加切片可视化，让用户对知识库的内部状态有直观认知。
+用户上传文档后，系统将其解析为切片（chunks）存入 ES。但用户目前只能看到"处理成功，120 个切片"这样的抽象信息，无法了解切片的实际内容。增加切片可视化，让用户对知识库的内部状态有直观认知，并与知识卡片建立双向导航。
 
-### 10.2 交互设计
+### 10.2 两级浏览结构
 
-在 KnowledgeView 的文档表格中，每行（status=SUCCESS 的文档）新增一个「查看切片」按钮。
+一个文档可能有上百个切片，直接平铺会挤爆用户视角。采用 **两级结构**：文档概览 → 主题分组 → 展开查看切片。
 
-点击后弹出右侧滑出面板（复用 CardDetailPanel 的交互模式）：
+#### 第一级：文档概览
+
+在 KnowledgeView 的文档表格中，每行（status=SUCCESS）新增「查看切片」按钮。点击后弹出右侧滑出面板：
 
 ```
 ┌─────────────────────────────────────┐
-│ ← 返回                  文档名.pdf    │
+│ ← 返回                  JVM详解.pdf   │
 ├─────────────────────────────────────┤
 │                                     │
-│  📄 文件信息                         │
-│  文件大小：2.3 MB                     │
-│  切片数：47                          │
-│  状态：✅ SUCCESS                     │
-│  上传时间：2026-06-05 14:30          │
+│  📄 文档概览                         │
+│  切片数：47 | 文件大小：2.3 MB        │
+│                                     │
+│  📝 AI 摘要（首次打开时生成并缓存）     │
+│  "本文档涵盖了 JVM 架构、内存模型、    │
+│   GC 机制和类加载四个核心主题..."      │
 │                                     │
 ├─────────────────────────────────────┤
-│  切片列表 (47)          [搜索切片内容]  │
+│  📂 主题分组 (5)                     │
 │                                     │
-│  ┌─ 切片 #1                         │
-│  │  JVM（Java Virtual Machine）是    │
-│  │  Java 程序的运行环境。它提供了...   │
-│  │  字符数：342                       │
-│  ├─ 切片 #2                         │
-│  │  Java 内存模型规定了 Java 程序     │
-│  │  中各个变量的访问规则...            │
-│  │  字符数：287                       │
-│  ├─ 切片 #3                         │
-│  │  垃圾回收（GC）是 JVM 自动管理     │
-│  │  内存的机制。当对象不再被...        │
-│  │  字符数：415                       │
-│  └─ ...                             │
+│  ├─ JVM 基础架构         8 个切片     │
+│  ├─ 内存模型与区域划分    12 个切片    │
+│  ├─ 垃圾回收机制          11 个切片    │
+│  ├─ 类加载机制            9 个切片     │
+│  └─ JVM 调优参数          7 个切片     │
 │                                     │
-│  [加载更多] / [分页器]                │
+│  [🔍 搜索切片内容]                    │
 └─────────────────────────────────────┘
 ```
 
-### 10.3 后端 API
+#### 第二级：展开主题分组
+
+点击某个主题分组后，展示该分组下的切片列表：
+
+```
+┌─────────────────────────────────────┐
+│ ← 返回文档概览                        │
+├─────────────────────────────────────┤
+│  📂 内存模型与区域划分 (12)            │
+├─────────────────────────────────────┤
+│                                     │
+│  ┌─ 切片 #12                        │
+│  │  JVM 内存分为五个区域：堆、栈...    │
+│  │  342 字 | 🔗 2 张关联卡片          │
+│  ├─ 切片 #13                        │
+│  │  堆内存是 JVM 中最大的内存区域...   │
+│  │  287 字 | 🔗 1 张关联卡片          │
+│  ├─ 切片 #14                        │
+│  │  方法区用于存储已被虚拟机加载的...   │
+│  │  415 字 | 无关联卡片               │
+│  └─ ...                             │
+│                                     │
+│  [加载更多]                          │
+└─────────────────────────────────────┘
+```
+
+#### 主题分组的生成
+
+切片在 ES 中已有 embedding，利用现有数据动态聚类：
+
+1. 根据 taskId 从 ES 查出该文档全部切片的 embedding
+2. K-Means 聚类（k = min(8, chunkCount/5)，即平均每组 ≥5 个切片）
+3. 每组用 LLM 生成一个主题标题（输入：组内前 3 个切片的文本，输出：≤10 字标题）
+4. 聚类结果缓存到 Redis（key: `chunk-cluster:{taskId}`，TTL: 24h）
+5. 每组内按 chunkIndex 排序
+
+**不选固定分组的理由**：文档类型差异大（论文、API 文档、教程），按语义聚类比按原文章节切分更准确。
+
+### 10.3 切片 ↔ 知识卡片双向关联
+
+在"原始知识"（切片）和"结构化知识"（知识卡片）之间建立双向导航，基于现有 embedding 动态计算，无需额外存储。
+
+#### 方向 A：切片 → 关联知识卡片
+
+切片列表中每个切片显示"🔗 N 张关联卡片"。点击展开与该切片语义最相近的已确认知识卡片。
+
+**实现**：用切片的 embedding 在 ES `fish-knowledge-card` 索引做向量检索（top 3），相似度 > 0.7 的展示为关联卡片。点击卡片标题可跳转到知识卡片详情。
+
+**特性**：动态计算——即使后续新增了知识卡片，切片的"关联卡片"也会自动更新。
+
+#### 方向 B：知识卡片 → 源文档切片
+
+在知识卡片详情面板（CardDetailPanel）中，如果 `source_type = knowledge`，显示"📎 源文档切片"区域：
+
+```
+├─────────────────────────────────┤
+│  📎 源文档切片                     │
+│                                 │
+│  来自：JVM详解.pdf                │
+│  ┌─ 切片 #12  JVM 内存分为五个... │
+│  │  相似度：0.91  → [查看切片]     │
+│  ├─ 切片 #14  方法区用于存储...    │
+│  │  相似度：0.84  → [查看切片]     │
+│  └─ [查看全部切片]               │
+└─────────────────────────────────┘
+```
+
+**实现**：用卡片的 embedding 在源文档的切片中做向量检索（top 5），展示最相关的切片。点击"查看切片"跳转到 KnowledgeView 的切片面板并定位到该切片。
+
+#### 方向 C（进阶，MVP 后）：提取时直接映射
+
+当 AI 从对话中提取卡片，而该对话中 AI 的回答引用了知识库切片（RAG recall 命中过），可以在 RAG tracing 中记录命中关系。后续可根据 trace 数据自动将卡片与切片建立映射。MVP 阶段不做。
+
+### 10.4 后端 API
+
+#### 切片查询
 
 | 方法 | 路径 | 说明 | 响应 |
 |------|------|------|------|
-| GET | `/api/knowledge/documents/{taskId}/chunks` | 获取文档切片列表 | `ChunkListVO` |
-| GET | `/api/knowledge/documents/{taskId}/chunks/{chunkIndex}` | 获取单个切片详情 | `ChunkVO` |
+| GET | `/api/knowledge/documents/{taskId}/chunks` | 切片列表（支持按分组/搜索） | `ChunkListVO` |
+| GET | `/api/knowledge/documents/{taskId}/chunks/groups` | 切片主题分组 | `ChunkGroupVO` |
 
-Query 参数：`page, size, keyword`（可选，搜索切片内容）
+Query 参数（chunks）：`page, size, keyword, groupIndex`（可选，按分组筛选）
+
+**ChunkGroupVO**：
+```json
+{
+  "taskId": "task-xxx",
+  "fileName": "JVM详解.pdf",
+  "summary": "本文档涵盖了 JVM 架构、内存模型、GC 机制...",
+  "totalChunks": 47,
+  "groups": [
+    { "groupIndex": 0, "title": "JVM 基础架构", "chunkCount": 8 },
+    { "groupIndex": 1, "title": "内存模型与区域划分", "chunkCount": 12 },
+    { "groupIndex": 2, "title": "垃圾回收机制", "chunkCount": 11 },
+    { "groupIndex": 3, "title": "类加载机制", "chunkCount": 9 },
+    { "groupIndex": 4, "title": "JVM 调优参数", "chunkCount": 7 }
+  ]
+}
+```
 
 **ChunkListVO**：
 ```json
 {
   "taskId": "task-xxx",
-  "fileName": "JVM详解.pdf",
-  "totalChunks": 47,
   "chunks": [
     {
-      "chunkIndex": 1,
-      "content": "JVM（Java Virtual Machine）是...",
+      "chunkIndex": 12,
+      "content": "JVM 内存分为五个区域：堆、栈...",
       "charCount": 342,
-      "scopeType": "user"
+      "relatedCardCount": 2
     }
   ],
-  "total": 47
+  "total": 12
 }
 ```
 
-### 10.4 后端实现
+#### 切片关联卡片
 
-在现有 `KnowledgeController` 中新增切片查询接口。实现逻辑：
+| 方法 | 路径 | 说明 | 响应 |
+|------|------|------|------|
+| GET | `/api/knowledge/chunks/{taskId}/{chunkIndex}/related-cards` | 切片关联的知识卡片 | `RelatedCardVO[]` |
 
-1. 根据 taskId 从 MySQL `document_metadata` 获取文档信息
-2. 根据 taskId 在 ES 中查询该文档的切片（索引为 `fish-user-knowledge` 或 `fish-public-knowledge`，按 scopeType 区分）
-3. 按分页返回切片内容
+**RelatedCardVO**：
+```json
+[
+  { "cardId": 5, "title": "JVM 内存模型", "cardType": "topic", "similarity": 0.91 },
+  { "cardId": 12, "title": "堆内存分配", "cardType": "concept", "similarity": 0.78 }
+]
+```
 
-无需新增 entity/mapper，直接复用现有 ES 操作。
+#### 卡片关联切片（复用现有卡片 API 扩展）
 
-### 10.5 前端实现
+`GET /api/card/{id}` 的 CardVO 中，当 `sourceType = knowledge` 时，额外返回 `relatedChunks` 字段：
+
+```json
+{
+  "id": 1,
+  "...": "...",
+  "relatedChunks": [
+    {
+      "taskId": "task-xxx",
+      "fileName": "JVM详解.pdf",
+      "chunkIndex": 12,
+      "contentPreview": "JVM 内存分为五个区域...",
+      "similarity": 0.91
+    }
+  ]
+}
+```
+
+### 10.5 后端实现
+
+在现有 `KnowledgeController` 中新增切片相关接口。实现逻辑：
+
+1. **分组接口**：根据 taskId 查 Redis 缓存 → 未命中则从 ES 取该文档全部切片 embedding → K-Means 聚类 → LLM 生成组标题 → 缓存 → 返回
+2. **切片列表**：根据 taskId + 可选 groupIndex 在 ES 查询切片，分页返回
+3. **切片关联卡片**：取切片 embedding → 在 `fish-knowledge-card` 索引做向量检索 → 返回 top 3
+4. **卡片关联切片**：取卡片 embedding → 在知识库索引按 taskId 过滤做向量检索 → 返回 top 5
+
+无需新增 entity/mapper，复用现有 ES 操作 + Redis 缓存。
+
+### 10.6 前端实现
 
 **新增文件**：
 
 | 文件 | 职责 |
 |------|------|
-| `src/components/ChunkDetailPanel.vue` | 切片详情侧面板（切片列表 + 搜索 + 分页） |
+| `src/components/ChunkDetailPanel.vue` | 切片可视化侧面板（文档概览 + 主题分组 + 展开切片列表 + 关联卡片） |
+| `src/components/ChunkCardLinks.vue` | 切片关联卡片列表（可复用于切片面板和卡片详情面板） |
 
 **修改文件**：
 
 | 文件 | 变更 |
 |------|------|
 | `src/views/KnowledgeView.vue` | 表格新增「查看切片」按钮列，挂载 ChunkDetailPanel |
-| `src/api/knowledge.ts` | 新增 `getDocumentChunks` 和 `getChunkDetail` API |
+| `src/components/CardDetailPanel.vue` | source_type=knowledge 时展示"📎 源文档切片"区域 |
+| `src/api/knowledge.ts` | 新增 `getChunkGroups`、`getDocumentChunks`、`getChunkRelatedCards` |
 
 ---
 
