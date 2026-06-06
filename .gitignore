@@ -45,4 +45,4 @@ src/main/resources/application-dev.yml
 .env
 temp/
 .superpowers/
-
+.docs/

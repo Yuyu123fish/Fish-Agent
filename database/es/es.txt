@@ -97,3 +97,33 @@ PUT fish-rag-trace
     }
   }
 }
+--------------------------------------------------------------------------------
+一次性创建 fish-knowledge-card（知识卡片聚合表，供运营/内容管理/多来源统一）
+--------------------------------------------------------------------------------
+PUT fish-knowledge-card
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0
+  },
+  "mappings": {
+    "properties": {
+      "cardId":     { "type": "long" },
+      "userId":     { "type": "long" },
+      "title":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "content":    { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "keywords":   { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "cardType":   { "type": "keyword" },
+      "sourceType": { "type": "keyword" },
+      "status":     { "type": "keyword" },
+      "groupName":  { "type": "keyword" },
+      "embedding":  {
+        "type": "dense_vector",
+        "dims": 1536,
+        "index": true,
+        "similarity": "cosine"
+      },
+      "createdAt":  { "type": "date", "format": "yyyy-MM-dd'T'HH:mm:ss||epoch_millis" }
+    }
+  }
+}

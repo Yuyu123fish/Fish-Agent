@@ -52,3 +52,40 @@ CREATE TABLE IF NOT EXISTS `document_metadata`
     KEY `idx_status` (`status`)
 ) ENGINE = InnoDB
   DEFAULT CHARSET = utf8mb4 COMMENT ='知识库文件上传任务元数据表';
+
+  -- ============================================================
+-- 知识卡片功能 - MySQL 建表
+-- 执行方式：在 Fish Agent 对应的 MySQL 数据库中执行
+-- ============================================================
+
+-- 卡片主表
+CREATE TABLE IF NOT EXISTS knowledge_card (
+  id          BIGINT AUTO_INCREMENT PRIMARY KEY,
+  user_id     BIGINT NOT NULL,
+  title       VARCHAR(200) NOT NULL,
+  content     TEXT NOT NULL,
+  keywords    JSON COMMENT '关键词数组，如 ["JVM","内存","GC"]',
+  card_type   VARCHAR(20) NOT NULL DEFAULT 'concept' COMMENT 'concept(概念) / topic(主题)',
+  source_type VARCHAR(20) NOT NULL DEFAULT 'manual' COMMENT 'chat / manual / knowledge',
+  source_id   VARCHAR(100) COMMENT 'sessionId 或 documentId，NULL 为手动创建',
+  status      VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'pending / confirmed / rejected',
+  group_name  VARCHAR(100) COMMENT '分组名称，NULL 表示未分组',
+  created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  INDEX idx_user_status (user_id, status),
+  INDEX idx_source (source_type, source_id),
+  INDEX idx_user_group (user_id, group_name)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 卡片关联表
+CREATE TABLE IF NOT EXISTS card_relation (
+  id             BIGINT AUTO_INCREMENT PRIMARY KEY,
+  from_card_id   BIGINT NOT NULL,
+  to_card_id     BIGINT NOT NULL,
+  relation_type  VARCHAR(30) NOT NULL COMMENT 'related_to / contains / precedes / derived_from',
+  confidence     FLOAT NOT NULL DEFAULT 1.0 COMMENT 'AI 置信度 0~1，手动创建为 1.0',
+  created_at     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_from (from_card_id),
+  INDEX idx_to (to_card_id),
+  UNIQUE INDEX uk_relation (from_card_id, to_card_id, relation_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
