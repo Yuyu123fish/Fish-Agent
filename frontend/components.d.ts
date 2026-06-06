@@ -7,10 +7,11 @@ export {}
 /* prettier-ignore */
 declare module 'vue' {
   export interface GlobalComponents {
+    AppHeader: typeof import('./src/components/AppHeader.vue')['default']
     ChatInput: typeof import('./src/components/ChatInput.vue')['default']
+    DrawerSidebar: typeof import('./src/components/DrawerSidebar.vue')['default']
     ElAlert: typeof import('element-plus/es')['ElAlert']
     ElButton: typeof import('element-plus/es')['ElButton']
-    ElCard: typeof import('element-plus/es')['ElCard']
     ElForm: typeof import('element-plus/es')['ElForm']
     ElFormItem: typeof import('element-plus/es')['ElFormItem']
     ElIcon: typeof import('element-plus/es')['ElIcon']
@@ -25,9 +26,9 @@ declare module 'vue' {
     KnowledgeUpload: typeof import('./src/components/KnowledgeUpload.vue')['default']
     MessageBubble: typeof import('./src/components/MessageBubble.vue')['default']
     MessageList: typeof import('./src/components/MessageList.vue')['default']
+    ParticleBackground: typeof import('./src/components/ParticleBackground.vue')['default']
     RouterLink: typeof import('vue-router')['RouterLink']
     RouterView: typeof import('vue-router')['RouterView']
-    SessionSidebar: typeof import('./src/components/SessionSidebar.vue')['default']
   }
   export interface ComponentCustomProperties {
     vLoading: typeof import('element-plus/es')['ElLoadingDirective']

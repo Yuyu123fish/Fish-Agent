@@ -15,6 +15,10 @@ const password = ref('')
 const nickname = ref('')
 const loading = ref(false)
 
+function switchTab() {
+  tab.value = tab.value === 'login' ? 'register' : 'login'
+}
+
 /**
  * 提交登录表单。
  */
@@ -47,49 +51,56 @@ async function onRegister() {
     loading.value = false
   }
 }
+
+function onSubmit() {
+  if (tab.value === 'login') void onLogin()
+  else void onRegister()
+}
 </script>
 
 <template>
   <div class="login-page">
-    <div class="orb orb-1"></div>
-    <div class="orb orb-2"></div>
-    <el-card class="card" shadow="never">
+    <div class="card">
       <div class="brand">
         <span class="brand-icon">🐟</span>
         <h1 class="title">Fish Agent</h1>
       </div>
-      <el-tabs v-model="tab">
-        <el-tab-pane label="登录" name="login">
-          <el-form label-position="top" @submit.prevent="onLogin">
-            <el-form-item label="账号">
-              <el-input v-model="username" autocomplete="username" />
-            </el-form-item>
-            <el-form-item label="密码">
-              <el-input v-model="password" type="password" autocomplete="current-password" show-password />
-            </el-form-item>
-            <el-button type="primary" native-type="submit" :loading="loading" class="login-btn" style="width: 100%">
-              登录
-            </el-button>
-          </el-form>
-        </el-tab-pane>
-        <el-tab-pane label="注册" name="register">
-          <el-form label-position="top" @submit.prevent="onRegister">
-            <el-form-item label="账号">
-              <el-input v-model="username" autocomplete="username" />
-            </el-form-item>
-            <el-form-item label="昵称（可选）">
-              <el-input v-model="nickname" autocomplete="nickname" />
-            </el-form-item>
-            <el-form-item label="密码（至少 6 位）">
-              <el-input v-model="password" type="password" autocomplete="new-password" show-password />
-            </el-form-item>
-            <el-button type="primary" native-type="submit" :loading="loading" class="login-btn" style="width: 100%">
-              注册
-            </el-button>
-          </el-form>
-        </el-tab-pane>
-      </el-tabs>
-    </el-card>
+
+      <Transition name="form-switch" mode="out-in">
+        <el-form v-if="tab === 'login'" key="login" label-position="top" @submit.prevent="onSubmit">
+          <el-form-item label="账号">
+            <el-input v-model="username" autocomplete="username" />
+          </el-form-item>
+          <el-form-item label="密码">
+            <el-input v-model="password" type="password" autocomplete="current-password" show-password />
+          </el-form-item>
+          <el-button type="primary" native-type="submit" :loading="loading" class="submit-btn">
+            登录
+          </el-button>
+          <p class="switch-text">
+            没有账号？<button type="button" class="link" @click="switchTab">去注册</button>
+          </p>
+        </el-form>
+
+        <el-form v-else key="register" label-position="top" @submit.prevent="onSubmit">
+          <el-form-item label="账号">
+            <el-input v-model="username" autocomplete="username" />
+          </el-form-item>
+          <el-form-item label="昵称（可选）">
+            <el-input v-model="nickname" autocomplete="nickname" />
+          </el-form-item>
+          <el-form-item label="密码（至少 6 位）">
+            <el-input v-model="password" type="password" autocomplete="new-password" show-password />
+          </el-form-item>
+          <el-button type="primary" native-type="submit" :loading="loading" class="submit-btn">
+            注册
+          </el-button>
+          <p class="switch-text">
+            已有账号？<button type="button" class="link" @click="switchTab">去登录</button>
+          </p>
+        </el-form>
+      </Transition>
+    </div>
   </div>
 </template>
 
@@ -99,55 +110,20 @@ async function onRegister() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--gradient-login-bg);
   position: relative;
-  overflow: hidden;
-}
-
-.orb {
-  position: absolute;
-  border-radius: 50%;
-  filter: blur(80px);
-  opacity: 0.4;
-  pointer-events: none;
-}
-
-.orb-1 {
-  width: 400px;
-  height: 400px;
-  background: rgba(99, 102, 241, 0.35);
-  top: -100px;
-  right: -80px;
-}
-
-.orb-2 {
-  width: 300px;
-  height: 300px;
-  background: rgba(168, 85, 247, 0.3);
-  bottom: -60px;
-  left: -60px;
+  z-index: 1;
 }
 
 .card {
-  position: relative;
-  z-index: 1;
   width: 400px;
   max-width: 92vw;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: var(--radius-xl);
-  background: rgba(255, 255, 255, 0.85);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  box-shadow: var(--shadow-lg);
-}
-
-[data-theme='dark'] .card {
-  background: rgba(30, 30, 35, 0.85);
-  border-color: rgba(255, 255, 255, 0.08);
-}
-
-:deep(.el-card__body) {
   padding: 40px 36px;
+  border-radius: var(--radius-xl);
+  background: var(--bg-glass);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
 }
 
 .brand {
@@ -155,7 +131,7 @@ async function onRegister() {
   align-items: center;
   justify-content: center;
   gap: 8px;
-  margin-bottom: 16px;
+  margin-bottom: 24px;
 }
 
 .brand-icon {
@@ -165,7 +141,6 @@ async function onRegister() {
 
 .title {
   margin: 0;
-  text-align: left;
   font-size: 1.5rem;
   font-weight: 600;
   background: var(--gradient-brand);
@@ -174,21 +149,59 @@ async function onRegister() {
   background-clip: text;
 }
 
-:deep(.login-btn) {
+.submit-btn {
+  width: 100%;
   background: var(--gradient-brand) !important;
   border: none !important;
   height: 40px;
   font-size: 15px;
   font-weight: 500;
-  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  transition: opacity var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-:deep(.login-btn:hover) {
+.submit-btn:hover {
   opacity: 0.92;
   transform: translateY(-1px);
+  box-shadow: 0 4px 24px rgba(99, 102, 241, 0.4);
 }
 
-:deep(.login-btn:active) {
+.submit-btn:active {
   transform: translateY(0);
+}
+
+.switch-text {
+  text-align: center;
+  margin: 16px 0 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+}
+
+.link {
+  background: none;
+  border: none;
+  color: var(--primary-light);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0;
+}
+
+.link:hover {
+  text-decoration: underline;
+}
+
+/* 表单切换动画 */
+.form-switch-enter-active,
+.form-switch-leave-active {
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.form-switch-enter-from {
+  opacity: 0;
+  transform: translateY(8px);
+}
+
+.form-switch-leave-to {
+  opacity: 0;
+  transform: translateY(-8px);
 }
 </style>

@@ -90,7 +90,9 @@ watch(activeSid, () => focusInput())
   align-items: flex-end;
   gap: 8px;
   width: 100%;
-  background: var(--bg-main);
+  background: var(--bg-input-wrap);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
   padding: 6px 6px 6px 16px;
@@ -100,15 +102,7 @@ watch(activeSid, () => focusInput())
 
 .ipt-wrap:focus-within {
   border-color: var(--primary);
-  box-shadow: var(--shadow-md), 0 0 0 3px rgba(79, 70, 229, 0.1);
-}
-
-[data-theme='dark'] .ipt-wrap {
-  box-shadow: var(--shadow-md), 0 -2px 20px rgba(0, 0, 0, 0.3);
-}
-
-[data-theme='dark'] .ipt-wrap:focus-within {
-  box-shadow: var(--shadow-md), 0 0 0 3px rgba(99, 102, 241, 0.15);
+  box-shadow: var(--shadow-md), var(--glow-focus), 0 0 20px rgba(99, 102, 241, 0.1);
 }
 
 .ipt {

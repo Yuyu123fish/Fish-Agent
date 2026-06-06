@@ -186,12 +186,11 @@ function onPublicFileChange(uploadFile: UploadFile) {
 
 .kb-status {
   font-size: 11px;
-  color: var(--text-secondary, #6b7280);
+  color: var(--text-secondary);
   margin-top: 6px;
   min-height: 16px;
 }
 
-/* plain 按钮 disabled 时避免白底：用明确变量覆盖 */
 :deep(.el-button--primary.is-plain.is-disabled),
 :deep(.el-button--primary.is-plain.is-disabled:hover) {
   opacity: 0.5;

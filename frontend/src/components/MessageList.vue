@@ -198,15 +198,11 @@ onMounted(() => {
   width: 200px;
   height: 200px;
   border-radius: 50%;
-  background: radial-gradient(circle, rgba(79, 70, 229, 0.12), transparent 70%);
+  background: radial-gradient(circle, rgba(99, 102, 241, 0.15), transparent 70%);
   top: -40px;
   left: 50%;
   transform: translateX(-50%);
   pointer-events: none;
-}
-
-[data-theme='dark'] .welcome-glow {
-  background: radial-gradient(circle, rgba(99, 102, 241, 0.15), transparent 70%);
 }
 
 .welcome .logo {
@@ -243,7 +239,9 @@ onMounted(() => {
   font-size: 13px;
   line-height: 1.5;
   color: var(--text);
-  background: var(--bg-main);
+  background: var(--bg-suggestion);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   border-left: 3px solid var(--primary);
   border-radius: var(--radius-md);
@@ -258,9 +256,8 @@ onMounted(() => {
 
 .suggestion-card:hover:not(:disabled) {
   border-color: var(--primary);
-  box-shadow: 0 6px 20px rgba(79, 70, 229, 0.15);
+  box-shadow: 0 6px 20px rgba(99, 102, 241, 0.2);
   transform: translateY(-2px);
-  background: var(--bg-hover);
 }
 
 .suggestion-card:active:not(:disabled) {
@@ -270,10 +267,6 @@ onMounted(() => {
 .suggestion-card:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-}
-
-[data-theme='dark'] .suggestion-card:hover:not(:disabled) {
-  box-shadow: 0 4px 18px rgba(99, 102, 241, 0.18);
 }
 
 .err {
@@ -288,14 +281,15 @@ onMounted(() => {
   height: 36px;
   border-radius: 50%;
   border: 1px solid var(--border);
-  background: var(--bg-main);
+  background: var(--bg-to-bottom);
+  backdrop-filter: blur(8px);
   color: var(--text-primary);
   cursor: pointer;
-  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--shadow-md);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: transform 0.15s ease;
+  transition: transform 0.15s ease, border-color 0.15s ease, color 0.15s ease;
 }
 
 .to-bottom:hover {

@@ -161,17 +161,15 @@ async function copy() {
   background: var(--gradient-brand);
   color: var(--bubble-user-text);
   border-radius: var(--radius-md);
-  box-shadow: 0 2px 8px rgba(79, 70, 229, 0.22);
+  box-shadow: 0 2px 16px rgba(99, 102, 241, 0.35);
   border-bottom-right-radius: 4px;
-}
-
-[data-theme='dark'] .bubble.user {
-  box-shadow: 0 3px 16px rgba(99, 102, 241, 0.35);
 }
 
 .bubble.assistant {
   background: var(--bubble-assistant);
-  border: none;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--border-bubble);
   color: var(--bubble-assistant-text);
   border-radius: var(--radius-md);
   border-bottom-left-radius: 4px;
@@ -179,7 +177,9 @@ async function copy() {
 }
 
 .bubble.tool {
-  background: var(--bg-main);
+  background: var(--bubble-tool);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
   color: var(--text-primary);
@@ -223,14 +223,10 @@ async function copy() {
   width: 28px;
   height: 28px;
   border-radius: var(--radius-sm);
-  background: linear-gradient(135deg, rgba(79, 70, 229, 0.12), rgba(124, 58, 237, 0.08));
+  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.15));
   display: flex;
   align-items: center;
   justify-content: center;
-}
-
-[data-theme='dark'] .tool-badge {
-  background: linear-gradient(135deg, rgba(99, 102, 241, 0.2), rgba(139, 92, 246, 0.15));
 }
 
 .tool-badge .tool-icon {
@@ -360,16 +356,11 @@ async function copy() {
 }
 .copy-btn:hover {
   color: var(--primary);
-  background: var(--bg-main);
+  background: var(--bg-copy-hover);
   border-color: var(--border);
 }
 .copy-btn.ok {
   opacity: 1;
-  color: #16a34a;
-  background: #ecfdf5;
-  border-color: #bbf7d0;
-}
-[data-theme='dark'] .copy-btn.ok {
   color: #4ade80;
   background: rgba(74, 222, 128, 0.1);
   border-color: rgba(74, 222, 128, 0.25);

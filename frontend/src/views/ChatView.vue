@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { onUnmounted } from 'vue'
 import { useChatStore } from '@/store/chat'
-import SessionSidebar from '@/components/SessionSidebar.vue'
+import AppHeader from '@/components/AppHeader.vue'
+import DrawerSidebar from '@/components/DrawerSidebar.vue'
 import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
 
@@ -14,7 +15,8 @@ onUnmounted(() => {
 
 <template>
   <div class="layout">
-    <SessionSidebar />
+    <AppHeader />
+    <DrawerSidebar />
     <main class="main">
       <MessageList />
       <ChatInput />
@@ -24,17 +26,19 @@ onUnmounted(() => {
 
 <style scoped>
 .layout {
+  position: relative;
+  z-index: 1;
   display: flex;
   height: 100vh;
   width: 100vw;
-  background: var(--bg-page);
 }
 
 .main {
   flex: 1;
   display: flex;
   flex-direction: column;
-  background: var(--bg-main);
   min-width: 0;
+  padding-top: 48px;
+  background: var(--bg-chat-area);
 }
 </style>

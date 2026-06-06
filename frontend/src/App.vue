@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onErrorCaptured, ref } from 'vue'
 import { RouterView } from 'vue-router'
+import ParticleBackground from '@/components/ParticleBackground.vue'
 
 const hasError = ref(false)
 
@@ -16,6 +17,7 @@ function retry() {
 </script>
 
 <template>
+  <ParticleBackground />
   <div v-if="hasError" class="error-boundary">
     <div class="error-icon">⚠️</div>
     <h2>出了点问题</h2>
@@ -27,12 +29,13 @@ function retry() {
 
 <style scoped>
 .error-boundary {
+  position: relative;
+  z-index: 1;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   height: 100vh;
-  background: var(--bg-page);
   color: var(--text-primary);
 }
 
@@ -56,7 +59,7 @@ function retry() {
   padding: 8px 24px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
-  background: var(--bg-main);
+  background: rgba(15, 15, 25, 0.72);
   color: var(--text-primary);
   cursor: pointer;
   font-size: 14px;
@@ -65,6 +68,6 @@ function retry() {
 
 .retry-btn:hover {
   border-color: var(--primary);
-  color: var(--primary);
+  color: var(--primary-light);
 }
 </style>
