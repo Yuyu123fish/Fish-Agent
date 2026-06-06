@@ -13,7 +13,7 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * DashScope {@code qwen3-rerank} 精排实现（原 gte-rerank 已于 2025-05-30 下线）。
+ * DashScope {@code qwen3-rerank} 精排实现（原 gte-rerank 已于 2026-05-30 下线）。
  * <p>关闭、无 Key、网络失败或服务返回空结果时，默认降级为候选池前 Top-N，保证对话主链路不断。</p>
  */
 @Slf4j

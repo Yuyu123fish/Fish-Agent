@@ -1,12 +1,15 @@
 package com.yuyu.fishagent.rag.pipeline.recall;
 
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
+import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
 import com.yuyu.fishagent.rag.pipeline.fusion.RagScoreFusion;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
+import com.yuyu.fishagent.rag.tracing.RagQualityLogger;
+import com.yuyu.fishagent.rag.tracing.RagTraceDocument;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -19,6 +22,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Supplier;
@@ -112,6 +116,8 @@ public final class RagRecall {
         private final ObjectProvider<ElasticsearchOperations> operationsProvider;
         private final ExecutorService recallExecutor;
         private final RagReranker reranker;
+        private final RagHydeService hydeService;
+        private final RagQualityLogger qualityLogger;
 
         public DefaultAugmentation(
                 RagProperties ragProperties,
@@ -122,7 +128,9 @@ public final class RagRecall {
                 DocumentSearcher publicKnowledgeSearcher,
                 ObjectProvider<ElasticsearchOperations> operationsProvider,
                 @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
-                RagReranker reranker) {
+                RagReranker reranker,
+                RagHydeService hydeService,
+                RagQualityLogger qualityLogger) {
             this.ragProperties = ragProperties;
             this.queryRewriter = queryRewriter;
             this.subQueryExpander = subQueryExpander;
@@ -132,6 +140,8 @@ public final class RagRecall {
             this.operationsProvider = operationsProvider;
             this.recallExecutor = recallExecutor;
             this.reranker = reranker;
+            this.hydeService = hydeService;
+            this.qualityLogger = qualityLogger;
         }
 
         @Override
@@ -146,6 +156,8 @@ public final class RagRecall {
             if (rawUserInput == null || rawUserInput.isBlank()) {
                 return Optional.empty();
             }
+            long totalStart = System.currentTimeMillis();
+            Long traceUserId = UserContextHolder.currentUserIdOrNull();
 
             // 查询重写：仅当 fish.rag.rewrite-enabled=true 时走 QueryRewriter；否则用原文 trim（不做 Identity 规范化，避免隐式改写）
             final String textForExpandAndVector;
@@ -168,9 +180,14 @@ public final class RagRecall {
             }
             log.debug("[RagRecall] 子查询扩展 sid={}, subCount={}, subQueries={}", sessionId, subQueries.size(), subQueries);
 
+            // HyDE 默认关闭：开启时仅替换向量腿文本，文本召回仍使用真实查询/子查询。
+            String hyp = hydeService.generate(textForExpandAndVector);
+            final String vectorText = (hyp != null && !hyp.isBlank()) ? hyp : textForExpandAndVector;
+
             // 虚拟线程执行召回时不会继承 Servlet ThreadLocal；私有索引依赖 UserContextHolder.userId，必须在异步任务内回放快照。
             final UserContext ragUserSnapshot = UserContextHolder.get();
 
+            long recallStart = System.currentTimeMillis();
             int perK = Math.max(1, ragProperties.getRecall().getPerSubquerySize());
             // 每个子查询：用户对话记忆索引、用户文档知识索引、公有知识索引各跑一次文本召回（虚拟线程池并发）
             List<CompletableFuture<List<RecallHit>>> textFutures = new ArrayList<>();
@@ -190,14 +207,14 @@ public final class RagRecall {
 
             CompletableFuture<List<RecallHit>> userVecFuture = CompletableFuture.supplyAsync(
                     () -> runWithRagUserContext(ragUserSnapshot,
-                            () -> safeVectorSearch(userMemorySearcher, sessionId, textForExpandAndVector, perK)),
+                            () -> safeVectorSearch(userMemorySearcher, sessionId, vectorText, perK)),
                     recallExecutor);
             CompletableFuture<List<RecallHit>> userKnowledgeVecFuture = CompletableFuture.supplyAsync(
                     () -> runWithRagUserContext(ragUserSnapshot,
-                            () -> safeVectorSearch(userKnowledgeSearcher, sessionId, textForExpandAndVector, perK)),
+                            () -> safeVectorSearch(userKnowledgeSearcher, sessionId, vectorText, perK)),
                     recallExecutor);
             CompletableFuture<List<RecallHit>> publicVecFuture = CompletableFuture.supplyAsync(
-                    () -> safeVectorSearch(publicKnowledgeSearcher, sessionId, textForExpandAndVector, perK),
+                    () -> safeVectorSearch(publicKnowledgeSearcher, sessionId, vectorText, perK),
                     recallExecutor);
 
             CompletableFuture.allOf(
@@ -214,6 +231,14 @@ public final class RagRecall {
             batches.add(userVecFuture.join());
             batches.add(userKnowledgeVecFuture.join());
             batches.add(publicVecFuture.join());
+
+            long recallLatencyMs = System.currentTimeMillis() - recallStart;
+            int recallTotalHits = 0;
+            for (List<RecallHit> batch : batches) {
+                if (batch != null) {
+                    recallTotalHits += batch.size();
+                }
+            }
 
             // ── 召回明细 DEBUG 日志 ──
             if (log.isDebugEnabled()) {
@@ -236,26 +261,57 @@ public final class RagRecall {
             int maxFacts = Math.max(1, ragProperties.getRender().getMaxInjectedFacts());
             int poolSize = Math.max(maxFacts, ragProperties.getFusion().getCandidatePoolSize());
 
+            RagTraceDocument trace = new RagTraceDocument();
+            trace.setTraceId(UUID.randomUUID().toString());
+            trace.setUserId(traceUserId == null ? null : String.valueOf(traceUserId));
+            trace.setSessionId(sessionId);
+            trace.setOriginalQuery(rawUserInput);
+            trace.setRewrittenQuery(ragProperties.isRewriteEnabled() ? textForExpandAndVector : null);
+            trace.setExpandedQueries(subQueries);
+            trace.setRecallTotalHits(recallTotalHits);
+            trace.setRecallLatencyMs(recallLatencyMs);
+            trace.setHydeUsed(!vectorText.equals(textForExpandAndVector));
+            trace.setCreatedAt(System.currentTimeMillis());
+
             // 候选池阶段：RRF 统一文本路 / 向量路的排名尺度；关闭时回退旧 max-score 合并。
             List<RecallHit> candidates = ragProperties.getFusion().isEnabled()
                     ? RagScoreFusion.fuseByRrf(batches, ragProperties.getFusion().getRrfK(), poolSize)
                     : mergeByMaxScore(batches, poolSize);
             if (candidates.isEmpty()) {
                 log.debug("[RagRecall] 无召回命中 sid={}", sessionId);
+                trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
+                qualityLogger.log(trace);
                 return Optional.empty();
             }
+            trace.setRecallDedupedHits(candidates.size());
+            trace.setFusionTopN(candidates.size());
+            trace.setRerankInputCount(candidates.size());
 
             // 精排阶段：Reranker 内部封装关闭 / 无 Key / 异常降级，编排层保持直线流程。
             int topN = Math.min(maxFacts, Math.max(1, ragProperties.getRerank().getTopN()));
+            long rerankStart = System.currentTimeMillis();
             List<RecallHit> finalHits = reranker.rerank(textForExpandAndVector, candidates, topN);
+            trace.setRerankLatencyMs(System.currentTimeMillis() - rerankStart);
             if (finalHits.isEmpty()) {
                 log.debug("[RagRecall] 精排后无命中 sid={}", sessionId);
+                trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
+                qualityLogger.log(trace);
                 return Optional.empty();
             }
 
             String block = renderBlock(finalHits);
+            trace.setRerankTopScore(finalHits.get(0).score());
+            trace.setRerankLowestScore(finalHits.get(finalHits.size() - 1).score());
+            trace.setInjectedFactCount(finalHits.size());
+            trace.setInjectedTotalChars(block.length());
+            trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
+            qualityLogger.log(trace);
+
             log.debug("[RagRecall] 注入 sid={}, candidatePool={}, finalHits={}, blockLen={}",
                     sessionId, candidates.size(), finalHits.size(), block.length());
+            for(RecallHit hit : finalHits){
+                log.debug("[RagRecall] 精排命中 {}", hit.id());
+            }
             return Optional.of(block);
         }
 

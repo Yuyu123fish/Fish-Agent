@@ -148,6 +148,12 @@ fish:
     long-term-enabled: ${MEMORY_LONG_TERM_ENABLED:true}
     long-term-index-name: ${MEMORY_USER_INDEX:fish-user-memory}
     embedding-dimensions: ${DASHSCOPE_EMBEDDING_DIMENSIONS:1536}
+    # 长期事实写入前查重：避免同一用户反复沉淀高度相似事实
+    dedup:
+      enabled: ${FISH_MEMORY_DEDUP_ENABLED:true}
+      similarity-threshold: ${FISH_MEMORY_DEDUP_THRESHOLD:0.92}
+      k: 3
+      num-candidates: 20
     # 记忆压缩 / 长期事实抽取专用 Chat（DEEPSEEK 下为独立 OpenAiChatModel）
     chat:
       enabled: ${MEMORY_CHAT_ENABLED:true}
@@ -188,6 +194,27 @@ fish:
       fallback-on-error: true
       base-url: https://dashscope.aliyuncs.com
       api-key: ${DASHSCOPE_API_KEY:}
+    # 查询理解：LLM 语义分解 / TOKEN 词级扩展 / IDENTITY 原句
+    expand:
+      enabled: ${FISH_RAG_EXPAND_ENABLED:true}
+      strategy: ${FISH_RAG_EXPAND_STRATEGY:LLM}
+      max-queries: 4
+      temperature: 0.3
+      timeout-ms: 3000
+      min-query-chars: 5
+      max-query-chars: 200
+    # HyDE：生成假设性答案，仅用于向量召回腿；默认关闭
+    hyde:
+      enabled: ${FISH_RAG_HYDE_ENABLED:false}
+      max-tokens: 300
+      temperature: 0.5
+      timeout-ms: 3000
+    # RAG 质量追踪：异步写 ES，便于观察召回、精排与注入效果
+    tracing:
+      enabled: ${FISH_RAG_TRACING_ENABLED:true}
+      index-name: ${FISH_RAG_TRACE_INDEX:fish-rag-trace}
+      async: true
+      sample-rate: ${FISH_RAG_TRACING_SAMPLE_RATE:1.0}
 
   # ── 外部工具 ───────────────────────────────────────────────
   tools:

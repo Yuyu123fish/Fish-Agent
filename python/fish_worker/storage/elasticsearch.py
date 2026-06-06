@@ -64,6 +64,7 @@ class ElasticsearchIndexer:
         scope_private: bool,
         user_id: str | None,
         file_name: str,
+        file_type: str,
         chunks: list[TextChunk],
         vectors: list[list[float]],
         batch_size: int,
@@ -74,7 +75,8 @@ class ElasticsearchIndexer:
             task_id:          document_metadata.task_id（关联键）
             scope_private:    True → PRIVATE（私有用户知识库）, False → PUBLIC（组织知识库）
             user_id:          仅 PRIVATE 时写入，用于 ES 查询时的权限过滤
-            file_name:        仅 PUBLIC 时写入 doc_name 字段
+            file_name:        原始文件名，PRIVATE/PUBLIC 均写入 doc_name 字段
+            file_type:        文件类型（pdf/docx/xlsx/pptx/html/txt/md）
             chunks:           token 分块结果
             vectors:          对应 embedding 向量
             batch_size:       每批 bulk 条数
@@ -97,12 +99,14 @@ class ElasticsearchIndexer:
                     "doc_id": task_id,
                     "page_number": ch.page,
                     "chunk_index": ch.chunk_index,
+                    # v3.5 新增元数据：供后续筛选、诊断和前端展示扩展使用。
+                    "doc_name": file_name,
+                    "file_type": file_type,
+                    "token_count": ch.token_count,
                 }
                 if scope_private:
                     # 个人知识库索引不含 source_type（与 fish-user-memory 对话事实索引分离）
                     src["user_id"] = user_id or ""
-                else:
-                    src["doc_name"] = file_name
 
                 yield {
                     "_index": index_name,

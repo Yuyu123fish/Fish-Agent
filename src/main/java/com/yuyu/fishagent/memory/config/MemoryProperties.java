@@ -45,6 +45,21 @@ public class MemoryProperties {
     }
 
     /**
+     * 长期事实写入查重子配置（{@code fish.memory.dedup.*}）。
+     */
+    @Data
+    public static class Dedup {
+        /** 是否启用写入前 embedding 余弦查重；false 时行为与历史一致。 */
+        private boolean enabled = true;
+        /** 余弦相似度阈值，最近邻 >= 该值判定为重复并跳过写入。 */
+        private double similarityThreshold = 0.92;
+        /** knn 取回的最近邻条数。 */
+        private int k = 3;
+        /** knn 的 num_candidates。 */
+        private int numCandidates = 20;
+    }
+
+    /**
      * 短期记忆保留的最近消息数量。
      */
     private int shortTermWindowSize = 20;
@@ -88,4 +103,9 @@ public class MemoryProperties {
      * {@code fish.memory.snapshot}：短期记忆对象存储快照兜底参数。
      */
     private SnapshotProperties snapshot = new SnapshotProperties();
+
+    /**
+     * {@code fish.memory.dedup}：长期事实写入前的 embedding 余弦查重参数。
+     */
+    private Dedup dedup = new Dedup();
 }

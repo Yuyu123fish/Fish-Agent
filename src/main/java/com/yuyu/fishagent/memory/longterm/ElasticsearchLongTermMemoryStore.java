@@ -30,6 +30,7 @@ public class ElasticsearchLongTermMemoryStore implements LongTermMemoryStore {
     private final ObjectProvider<ElasticsearchOperations> operationsProvider;
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final MemoryProperties properties;
+    private final LongTermMemoryDeduplicator deduplicator;
 
     /**
      * 应用启动时按需创建长期记忆索引。
@@ -115,6 +116,12 @@ public class ElasticsearchLongTermMemoryStore implements LongTermMemoryStore {
             try {
                 // 使用 EmbeddingModel 将事实文本转换为向量
                 List<Float> embedding = toFloatList(embeddingModel.embed(fact.trim()));
+                // 写入前查重：复用本次 embedding，避免为查重再次调用 embedding 模型。
+                if (deduplicator.isDuplicate(operations, index, String.valueOf(userId), embedding)) {
+                    log.debug("[ElasticsearchLongTermMemoryStore] 跳过重复长期事实 sid={}, factLen={}",
+                            sessionId, fact.trim().length());
+                    continue;
+                }
                 String id = UUID.randomUUID().toString();
                 UserMemoryDocument document = new UserMemoryDocument();
                 document.setId(id);

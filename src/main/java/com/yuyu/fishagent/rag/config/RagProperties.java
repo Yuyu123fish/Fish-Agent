@@ -37,6 +37,15 @@ public class RagProperties {
     /** Cross-Encoder 精排。 */
     private Rerank rerank = new Rerank();
 
+    /** LLM 语义查询分解（替代/兜底词级扩展）。 */
+    private Expand expand = new Expand();
+
+    /** HyDE 假设性文档嵌入（可选增强，默认关闭）。 */
+    private Hyde hyde = new Hyde();
+
+    /** RAG 全链路质量追踪（异步写 ES）。 */
+    private Tracing tracing = new Tracing();
+
     /** CHAT_MODEL 模式下的采样温度（若底层实现忽略则仅依赖 Prompt）。 */
     private double rewriteTemperature = 0.1;
 
@@ -121,5 +130,68 @@ public class RagProperties {
 
         /** API Key；默认通过 yml 绑定 DASHSCOPE_API_KEY，为空时自动降级。 */
         private String apiKey = "";
+    }
+
+    @Data
+    public static class Expand {
+
+        /** 总开关；false 时回退为单条原句检索。 */
+        private boolean enabled = true;
+
+        /** 扩展策略：LLM 语义分解 / TOKEN 词级 / IDENTITY 单条原句。 */
+        private Strategy strategy = Strategy.LLM;
+
+        /** LLM 分解最多生成的子查询条数。 */
+        private int maxQueries = 4;
+
+        /** LLM 采样温度，预留给后续模型 option 扩展。 */
+        private double temperature = 0.3;
+
+        /** LLM 调用超时（毫秒），超时降级为单条原句。 */
+        private long timeoutMs = 3000;
+
+        /** 子查询可接受的最小字符数。 */
+        private int minQueryChars = 5;
+
+        /** 子查询可接受的最大字符数。 */
+        private int maxQueryChars = 200;
+
+        public enum Strategy {
+            LLM,
+            TOKEN,
+            IDENTITY
+        }
+    }
+
+    @Data
+    public static class Hyde {
+
+        /** HyDE 开关；默认关闭，开启后仅替换向量腿 embedding 文本。 */
+        private boolean enabled = false;
+
+        /** 假设性答案最大输出 token 数，预留给后续模型 option 扩展。 */
+        private int maxTokens = 300;
+
+        /** 生成假设性答案的采样温度，预留给后续模型 option 扩展。 */
+        private double temperature = 0.5;
+
+        /** LLM 调用超时（毫秒），超时降级回退原 query。 */
+        private long timeoutMs = 3000;
+    }
+
+    @Data
+    public static class Tracing {
+
+        /** 质量追踪开关。 */
+        private boolean enabled = true;
+
+        /** 追踪日志 ES 索引名。 */
+        private String indexName = "fish-rag-trace";
+
+        /** 是否异步写入，不阻塞对话主流程。 */
+        private boolean async = true;
+
+        /** 采样率 0.0~1.0；1.0 表示全量记录。 */
+        private double sampleRate = 1.0;
     }
 }

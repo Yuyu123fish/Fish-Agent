@@ -1,12 +1,15 @@
 package com.yuyu.fishagent.rag.pipeline.recall;
 
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
+import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.DashScopeRagReranker;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
+import com.yuyu.fishagent.rag.tracing.RagQualityLogger;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
@@ -32,6 +35,13 @@ public class RagRecallConfiguration {
     }
 
     @Bean
+    public RagHydeService ragHydeService(
+            @Qualifier("memoryChatModel") ObjectProvider<ChatModel> memoryChatModelProvider,
+            RagProperties ragProperties) {
+        return new RagHydeService(memoryChatModelProvider, ragProperties);
+    }
+
+    @Bean
     public RagRecall.Augmentation longTermRagContextService(
             RagProperties ragProperties,
             RagQueryRewrite.QueryRewriter queryRewriter,
@@ -41,7 +51,9 @@ public class RagRecallConfiguration {
             PublicKnowledgeElasticsearchSearcher publicKnowledgeElasticsearchSearcher,
             ObjectProvider<ElasticsearchOperations> operationsProvider,
             @Qualifier("ragRecallExecutor") ExecutorService ragRecallExecutor,
-            RagReranker ragReranker) {
+            RagReranker ragReranker,
+            RagHydeService ragHydeService,
+            RagQualityLogger ragQualityLogger) {
         return new RagRecall.DefaultAugmentation(
                 ragProperties,
                 queryRewriter,
@@ -51,6 +63,8 @@ public class RagRecallConfiguration {
                 publicKnowledgeElasticsearchSearcher,
                 operationsProvider,
                 ragRecallExecutor,
-                ragReranker);
+                ragReranker,
+                ragHydeService,
+                ragQualityLogger);
     }
 }

@@ -4,7 +4,7 @@
 #   LLM 按 token 计费和限制上下文窗口，用 token 能精确控制每块大小
 #   tiktoken 是 OpenAI 官方 tokenizer，与 DashScope / GPT-4 对齐
 #
-# 分块策略：
+# flat 兼容分块策略：
 #   1. 同页元素拼接（用两个换行分隔），不跨页合并
 #   2. 拼接后的文本用 tiktoken encode → token 列表
 #   3. 按 chunk_size=512 token 切分，overlap=50 token 重叠
@@ -27,7 +27,12 @@ from fish_worker.parser.base import RawElement
 log = logging.getLogger(__name__)
 
 # 模块级常量：encoder 只初始化一次（tiktoken 内部也有缓存，但显式提取更清晰）
-_ENCODER = tiktoken.get_encoding("cl100k_base")
+ENCODER = tiktoken.get_encoding("cl100k_base")
+
+
+def count_tokens(text: str) -> int:
+    """统计文本的 cl100k_base token 数，供 flat/structured 两种分块策略复用。"""
+    return len(ENCODER.encode(text))
 
 
 @dataclass
@@ -44,7 +49,7 @@ class TextChunk:
     token_count: int
 
 
-def _chunk_tokens(
+def chunk_tokens(
     tokens: list[int],
     encoder,
     chunk_size: int,
@@ -108,8 +113,8 @@ def chunk_elements(
             continue
 
         # tokenize → 切分
-        tokens = _ENCODER.encode(merged)
-        for text_piece, tc in _chunk_tokens(tokens, _ENCODER, chunk_size, overlap):
+        tokens = ENCODER.encode(merged)
+        for text_piece, tc in chunk_tokens(tokens, ENCODER, chunk_size, overlap):
             if not text_piece.strip():
                 continue
             chunks.append(

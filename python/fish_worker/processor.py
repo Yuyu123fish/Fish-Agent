@@ -23,6 +23,7 @@ import threading
 from collections.abc import Callable
 
 from fish_worker.chunker.text_chunker import chunk_elements
+from fish_worker.chunker.structured_chunker import chunk_elements as structured_chunk_elements
 from fish_worker.deps import WorkerContext
 from fish_worker.exceptions import UnsupportedFileTypeError
 from fish_worker.parser.factory import ParserFactory
@@ -75,12 +76,21 @@ class IngestProcessor:
                 log.warning("task_id=%s no extractable text", task.task_id)
                 return
 
-            # ---- 步骤 4: tiktoken 分块（512 token / 50 overlap）----
-            chunks = chunk_elements(
-                elements,
-                chunk_size=self._settings.fish_worker_chunk_size,
-                overlap=self._settings.fish_worker_chunk_overlap,
-            )
+            # ---- 步骤 4: 分块（structured 结构化 / flat 兼容旧版滑窗）----
+            strategy = getattr(self._settings, "fish_worker_chunk_strategy", "structured")
+            if strategy == "structured":
+                chunks = structured_chunk_elements(
+                    elements,
+                    chunk_size=self._settings.fish_worker_chunk_size,
+                    overlap=self._settings.fish_worker_chunk_overlap,
+                    table_max_tokens=getattr(self._settings, "fish_worker_table_max_tokens", 1024),
+                )
+            else:
+                chunks = chunk_elements(
+                    elements,
+                    chunk_size=self._settings.fish_worker_chunk_size,
+                    overlap=self._settings.fish_worker_chunk_overlap,
+                )
             if not chunks:
                 self._mark_success(
                     task.task_id,
@@ -98,6 +108,7 @@ class IngestProcessor:
             index_name = (
                 self._settings.knowledge_user_index if scope_private else self._settings.knowledge_public_index
             )
+            file_type = self._file_type(task.file_name, content_type)
 
             # 幂等：须在 index_name 确定后调用；同一 task_id 重处理前先清空该 doc_id 下旧切片
             self._es.delete_by_doc_id(index_name, task.task_id)
@@ -108,6 +119,7 @@ class IngestProcessor:
                 scope_private=scope_private,
                 user_id=task.user_id if scope_private else None,
                 file_name=task.file_name or "",
+                file_type=file_type,
                 chunks=chunks,
                 vectors=vectors,
                 batch_size=self._settings.fish_worker_es_batch_size,
@@ -212,6 +224,16 @@ class IngestProcessor:
                 log.exception("task_id=%s cleanup after lost SUCCESS CAS failed", task_id)
         log.warning("task_id=%s SUCCESS skipped because status is no longer PROCESSING", task_id)
         return False
+
+    @staticmethod
+    def _file_type(file_name: str | None, content_type: str | None) -> str:
+        """优先使用文件后缀；没有后缀时回退 MIME 子类型，方便 ES 侧按格式筛选。"""
+        ext = os.path.splitext(file_name or "")[1].lower().lstrip(".")
+        if ext:
+            return ext
+        if content_type:
+            return content_type.split("/")[-1].strip().lower()
+        return ""
 
 
 # ----------- 任务数据类 -----------

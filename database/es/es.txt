@@ -2,6 +2,7 @@
 Elasticsearch 索引说明（Fish-Agent）
 ================================================================================
 注意：以下 JSON 为 Kibana Dev Tools / curl 请求体，不得包含 // 注释，否则 ES 会返回 400。
+v3.5 新增 doc_name / file_type / token_count；旧文档缺失这些字段不影响检索。
 
 --------------------------------------------------------------------------------
 一次性创建 fish-user-memory（含文档溯源字段）
@@ -18,7 +19,8 @@ PUT fish-user-memory
       "doc_id":       { "type": "keyword" },
       "source_type":  { "type": "keyword" },
       "page_number":  { "type": "integer" },
-      "chunk_index":  { "type": "integer" }
+      "chunk_index":  { "type": "integer" },
+      "token_count":  { "type": "integer" }
     }
   }
 }
@@ -37,7 +39,9 @@ PUT fish-public-knowledge
       "created_at":   { "type": "date", "format": "epoch_millis" },
       "doc_id":       { "type": "keyword" },
       "page_number":  { "type": "integer" },
-      "chunk_index":  { "type": "integer" }
+      "chunk_index":  { "type": "integer" },
+      "file_type":    { "type": "keyword" },
+      "token_count":  { "type": "integer" }
     }
   }
 }
@@ -55,8 +59,41 @@ PUT fish-user-knowledge
       "embedding":    { "type": "dense_vector", "dims": 1536, "index": true, "similarity": "cosine" },
       "created_at":   { "type": "date", "format": "epoch_millis" },
       "doc_id":       { "type": "keyword" },
+      "doc_name":     { "type": "keyword" },
       "page_number":  { "type": "integer" },
-      "chunk_index":  { "type": "integer" }
+      "chunk_index":  { "type": "integer" },
+      "file_type":    { "type": "keyword" },
+      "token_count":  { "type": "integer" }
+    }
+  }
+}
+
+--------------------------------------------------------------------------------
+一次性创建 fish-rag-trace（RAG 查询理解 / 召回 / 精排 / 注入质量追踪）
+--------------------------------------------------------------------------------
+PUT fish-rag-trace
+{
+  "mappings": {
+    "properties": {
+      "trace_id":             { "type": "keyword" },
+      "user_id":              { "type": "keyword" },
+      "session_id":           { "type": "keyword" },
+      "original_query":       { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "rewritten_query":      { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "expanded_queries":     { "type": "text", "analyzer": "ik_max_word", "search_analyzer": "ik_smart" },
+      "recall_total_hits":    { "type": "integer" },
+      "recall_deduped_hits":  { "type": "integer" },
+      "fusion_top_n":         { "type": "integer" },
+      "rerank_input_count":   { "type": "integer" },
+      "rerank_top_score":     { "type": "double" },
+      "rerank_lowest_score":  { "type": "double" },
+      "hyde_used":            { "type": "boolean" },
+      "injected_fact_count":  { "type": "integer" },
+      "injected_total_chars": { "type": "integer" },
+      "recall_latency_ms":    { "type": "long" },
+      "rerank_latency_ms":    { "type": "long" },
+      "total_latency_ms":     { "type": "long" },
+      "created_at":           { "type": "date", "format": "epoch_millis" }
     }
   }
 }

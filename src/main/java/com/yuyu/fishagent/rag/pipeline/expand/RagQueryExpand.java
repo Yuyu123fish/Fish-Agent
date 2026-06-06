@@ -1,6 +1,13 @@
 package com.yuyu.fishagent.rag.pipeline.expand;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.rag.config.RagProperties;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.chat.messages.SystemMessage;
+import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.ai.chat.model.ChatModel;
+import org.springframework.ai.chat.prompt.Prompt;
 
 import java.text.BreakIterator;
 import java.util.ArrayList;
@@ -8,6 +15,8 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 多查询扩展（RAG 第二类）：将单条检索串拆成多条子查询，供并发 ES 召回。
@@ -87,6 +96,111 @@ public final class RagQueryExpand {
         private static boolean isSubstantiveToken(String s) {
             return s.codePoints().anyMatch(cp ->
                     Character.isLetterOrDigit(cp) || Character.UnicodeScript.of(cp) == Character.UnicodeScript.HAN);
+        }
+    }
+
+    /** 恒等扩展：单条 trim 后原句，用于禁用扩展或显式 IDENTITY 策略。 */
+    public static final class IdentityExpander implements SubQueryExpander {
+        @Override
+        public List<String> expand(String rewrittenQuery) {
+            if (rewrittenQuery == null || rewrittenQuery.isBlank()) {
+                return List.of();
+            }
+            return List.of(rewrittenQuery.trim());
+        }
+    }
+
+    /**
+     * LLM 语义查询分解：生成少量完整检索句；超时、解析失败或模型不可用时由调用链降级。
+     */
+    @Slf4j
+    public static final class LlmQueryDecomposer implements SubQueryExpander {
+
+        private final ChatModel chatModel;
+        private final RagProperties ragProperties;
+        private final ObjectMapper objectMapper;
+
+        public LlmQueryDecomposer(ChatModel chatModel, RagProperties ragProperties, ObjectMapper objectMapper) {
+            this.chatModel = chatModel;
+            this.ragProperties = ragProperties;
+            this.objectMapper = objectMapper;
+        }
+
+        @Override
+        public List<String> expand(String rewrittenQuery) {
+            if (rewrittenQuery == null || rewrittenQuery.isBlank()) {
+                return List.of();
+            }
+            String original = rewrittenQuery.trim();
+            RagProperties.Expand cfg = ragProperties.getExpand();
+            int maxQueries = Math.min(Math.max(1, cfg.getMaxQueries()), Math.max(1, ragProperties.getRecall().getMaxSubQueries()));
+            try {
+                CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+                    Prompt prompt = new Prompt(
+                            new SystemMessage(RagQueryDecomposePrompt.SYSTEM_INSTRUCTION),
+                            new UserMessage(RagQueryDecomposePrompt.userSegment(original)));
+                    return chatModel.call(prompt).getResult().getOutput().getText();
+                });
+                String raw = future.get(Math.max(1, cfg.getTimeoutMs()), TimeUnit.MILLISECONDS);
+                List<String> result = parseAndValidate(
+                        objectMapper, raw, original, cfg.getMinQueryChars(), cfg.getMaxQueryChars(), maxQueries);
+                log.debug("[LlmQueryDecomposer] 原句拆解为 {} 条子查询", result.size());
+                return result;
+            } catch (Exception e) {
+                log.warn("[LlmQueryDecomposer] 查询分解失败/超时，降级为单条原句: {}", e.getMessage());
+                return List.of(original);
+            }
+        }
+
+        /**
+         * 解析 LLM 输出的 JSON 字符串数组并做去重、长度过滤；失败时回退为原句。
+         */
+        public static List<String> parseAndValidate(ObjectMapper objectMapper, String raw, String original,
+                                                    int minChars, int maxChars, int maxQueries) {
+            List<String> fallback = List.of(original);
+            if (raw == null || raw.isBlank()) {
+                return fallback;
+            }
+            String json = extractJsonArray(raw.trim());
+            if (json == null) {
+                return fallback;
+            }
+            try {
+                JsonNode root = objectMapper.readTree(json);
+                if (!root.isArray()) {
+                    return fallback;
+                }
+                List<String> out = new ArrayList<>();
+                LinkedHashSet<String> seen = new LinkedHashSet<>();
+                for (JsonNode node : root) {
+                    if (!node.isTextual()) {
+                        continue;
+                    }
+                    String query = node.asText().trim();
+                    if (query.length() < minChars || query.length() > maxChars) {
+                        continue;
+                    }
+                    if (seen.add(query)) {
+                        out.add(query);
+                    }
+                    if (out.size() >= Math.max(1, maxQueries)) {
+                        break;
+                    }
+                }
+                return out.isEmpty() ? fallback : out;
+            } catch (Exception e) {
+                return fallback;
+            }
+        }
+
+        /** 容忍 ```json 代码块包裹，截取首个数组片段。 */
+        private static String extractJsonArray(String text) {
+            int start = text.indexOf('[');
+            int end = text.lastIndexOf(']');
+            if (start < 0 || end <= start) {
+                return null;
+            }
+            return text.substring(start, end + 1);
         }
     }
 }

@@ -104,6 +104,12 @@ class Settings(BaseSettings):
     fish_worker_concurrency: int = Field(default=2, validation_alias="FISH_WORKER_CONCURRENCY")
     fish_worker_chunk_size: int = Field(default=512, validation_alias="FISH_WORKER_CHUNK_SIZE")
     fish_worker_chunk_overlap: int = Field(default=50, validation_alias="FISH_WORKER_CHUNK_OVERLAP")
+    fish_worker_chunk_strategy: str = Field(
+        default="structured", validation_alias="FISH_WORKER_CHUNK_STRATEGY"
+    )
+    fish_worker_table_max_tokens: int = Field(
+        default=1024, validation_alias="FISH_WORKER_TABLE_MAX_TOKENS"
+    )
     fish_worker_es_batch_size: int = Field(default=20, validation_alias="FISH_WORKER_ES_BATCH_SIZE")
     fish_worker_dashscope_embed_batch: int = Field(
         default=25, validation_alias="FISH_WORKER_DASHSCOPE_EMBED_BATCH"
@@ -131,6 +137,11 @@ class Settings(BaseSettings):
     @classmethod
     def _upper_provider(cls, v: Any) -> str:
         return str(v).strip().upper() if v is not None else "DASHSCOPE"
+
+    @field_validator("fish_worker_chunk_strategy", mode="before")
+    @classmethod
+    def _lower_strategy(cls, v: Any) -> str:
+        return str(v).strip().lower() if v is not None else "structured"
 
     # @cached_property 类似 Java 的懒加载单例：首次访问时计算，之后缓存，不会重复计算
     # 等价于 Guava 的 Suppliers.memoize() 或 Spring @Cacheable

@@ -40,12 +40,14 @@ class FakeEs:
     def __init__(self) -> None:
         self.deletes: list[tuple[str, str]] = []
         self.bulk_calls = 0
+        self.last_bulk_kwargs: dict | None = None
 
     def delete_by_doc_id(self, index_name: str, task_id: str) -> None:
         self.deletes.append((index_name, task_id))
 
     def bulk_index_document_chunks(self, **kwargs) -> None:
         self.bulk_calls += 1
+        self.last_bulk_kwargs = kwargs
 
 
 class FakeEmbedder:
@@ -58,6 +60,8 @@ def fake_ctx(db: FakeDb, es: FakeEs):
         fish_worker_heartbeat_seconds=3600,
         fish_worker_chunk_size=512,
         fish_worker_chunk_overlap=50,
+        fish_worker_chunk_strategy="flat",
+        fish_worker_table_max_tokens=1024,
         fish_worker_es_batch_size=20,
         knowledge_user_index="fish-user-knowledge",
         knowledge_public_index="fish-public-knowledge",
@@ -93,6 +97,7 @@ class IngestProcessorCasTest(unittest.TestCase):
             IngestProcessor(fake_ctx(db, es)).process(task)
 
         self.assertEqual(1, es.bulk_calls)
+        self.assertEqual("pdf", es.last_bulk_kwargs["file_type"])
         self.assertEqual(
             [("fish-user-knowledge", "task-1"), ("fish-user-knowledge", "task-1")],
             es.deletes,
