@@ -1,7 +1,7 @@
 # 知识卡片（Knowledge Cards）功能设计
 
 > 日期：2026-06-06
-> 版本：v1.1
+> 版本：v4.1
 > 范围：前后端全栈新功能，不涉及现有功能修改（除 RAG recall 扩展）
 
 ---
@@ -29,6 +29,7 @@
 - 复习模式（纯前端）
 - RAG recall 扩展检索知识卡片索引
 - 空状态引导页
+- 知识库切片可视化（KnowledgeView 内查看文档切片）
 
 ---
 
@@ -204,9 +205,41 @@
 
 提示样式：`💡 这段对话包含多个知识点，点击提取为知识卡片`。点击后走正常提取流程，不点则消失。
 
-### 4.2 LLM Prompt
+### 4.2 对话加载策略（上下文窗口保护）
 
-**输入**：该 session 的完整对话历史（user + assistant 消息，跳过 tool 类型）
+直接加载全部对话原文有挤爆 LLM 上下文窗口的风险。采用分级策略：
+
+| 对话长度 | 策略 | Token 预算 |
+|----------|------|-----------|
+| ≤ 10 轮 或估计 ≤ 4000 tokens | 直接使用全部原文 | 不限 |
+| \> 10 轮 | 先调 LLM 对前半段生成「对话摘要」（复用 `memory/compress` 模块），再将「摘要 + 最近 10 轮原文」拼给提取 prompt | 约 6000 tokens |
+
+**具体流程**（长对话）：
+
+```
+1. 加载全部 user + assistant 消息（跳过 tool 类型）
+2. 估算 token 数（按中文 1 字 ≈ 1.5 token 粗算）
+3. 若 ≤ 4000 tokens → 直接拼 prompt
+4. 若 > 4000 tokens：
+   a. 取前半段消息 → 调 LLM 生成 300 字以内的「对话摘要」
+   b. 取最近 10 轮原文
+   c. 拼接格式：
+      """
+      [对话摘要]
+      以下是前半段对话的概要：
+      {summary}
+
+      [近期对话原文]
+      {recent_10_turns}
+      """
+   d. 将拼接内容喂给提取 prompt
+```
+
+**设计理由**：摘要保留了整体语境（对话讨论了什么话题、得出了什么结论），近期原文保留了细节（具体的技术要点、概念解释），两者结合比只用摘要或只用近期对话的提取质量都高。
+
+### 4.3 LLM Prompt
+
+**输入**：4.2 策略处理后的对话内容
 
 **Prompt 核心规则**：
 
@@ -245,36 +278,40 @@
 }
 ```
 
-### 4.3 后端处理流程
+### 4.4 后端处理流程
 
 ```
 extractFromSession(sessionId, userId)
   │
-  ├─ 1. 从 chat_history 加载该 session 全部对话
+  ├─ 1. 从 chat_history 加载该 session 全部对话（user + assistant，跳过 tool）
   │
-  ├─ 2. 拼接 prompt + 对话原文 → 调 LLM（复用现有 llm 模块）
+  ├─ 2. 对话加载策略（见 4.2）
+  │     ├─ 短对话（≤10 轮 / ≤4000 tokens）→ 直接使用原文
+  │     └─ 长对话 → 生成摘要 + 取最近 10 轮原文拼接
   │
-  ├─ 3. 解析 LLM 返回的 JSON
+  ├─ 3. 拼接提取 prompt + 处理后的对话内容 → 调 LLM
+  │
+  ├─ 4. 解析 LLM 返回的 JSON
   │     └─ 校验：title 非空、content 非空、relation 的 from_title/to_title 存在
   │
-  ├─ 4. 批量写入 knowledge_card 表（status=pending）
+  ├─ 5. 批量写入 knowledge_card 表（status=pending）
   │     └─ 记录 title → cardId 映射
   │
-  ├─ 5. 建立内部关联（同批次卡片间的 relations）
+  ├─ 6. 建立内部关联（同批次卡片间的 relations）
   │     └─ from_title/to_title → 查映射得 cardId → 写 card_relation
   │
-  ├─ 6. 建立外部关联（与用户已有 confirmed 卡片的关联）
+  ├─ 7. 建立外部关联（与用户已有 confirmed 卡片的关联）
   │     ├─ 对每张新卡片生成 embedding（复用 DashScope text-embedding-v2）
   │     ├─ 用 embedding 在 ES fish-knowledge-card 做向量检索（top 5）
   │     ├─ 相似度 > 0.75 的已有卡片 → 自动建 related_to 关联
   │     └─ 写 card_relation，confidence = similarity score
   │
-  └─ 7. 返回提取结果 { extractedCount, cardIds[], cards[] }
+  └─ 8. 返回提取结果 { extractedCount, cardIds[], cards[] }
         └─ cards[] 包含每张卡片的完整数据（id, title, content, keywords,
            cardType, groupName, relations），供前端即时预览
 ```
 
-### 4.4 错误处理
+### 4.5 错误处理
 
 - LLM 返回非 JSON → 记录日志，返回错误"提取失败，请稍后重试"
 - JSON 解析成功但部分卡片校验失败 → 跳过无效卡片，保留有效的
@@ -711,7 +748,107 @@ rag/pipeline/recall/
 | 复习模式 | 纯前端一轮过 | MVP 轻量，后续可加间隔重复算法 |
 | 疑似重复 | confidence > 0.9 标记 + 合并 | AI 多次提取可能重复，需去重机制 |
 | 空状态引导 | 引导页替代空白 | 新用户首次进入无卡片时会流失 |
+| 对话加载策略 | 分级：短对话原文 / 长对话摘要+近期 | 保护 LLM 上下文窗口不被挤爆 |
+| 知识库切片可视化 | KnowledgeView 内「查看切片」侧面板 | 让用户看到文档解析后的实际切片内容 |
 
 ---
 
-_设计文档 · 知识卡片 · v1.1 · 2026-06-06_
+## 10. 知识库切片可视化
+
+### 10.1 背景
+
+用户上传文档后，系统将其解析为切片（chunks）存入 ES。但用户目前只能看到"处理成功，120 个切片"这样的抽象信息，无法了解切片的实际内容。增加切片可视化，让用户对知识库的内部状态有直观认知。
+
+### 10.2 交互设计
+
+在 KnowledgeView 的文档表格中，每行（status=SUCCESS 的文档）新增一个「查看切片」按钮。
+
+点击后弹出右侧滑出面板（复用 CardDetailPanel 的交互模式）：
+
+```
+┌─────────────────────────────────────┐
+│ ← 返回                  文档名.pdf    │
+├─────────────────────────────────────┤
+│                                     │
+│  📄 文件信息                         │
+│  文件大小：2.3 MB                     │
+│  切片数：47                          │
+│  状态：✅ SUCCESS                     │
+│  上传时间：2026-06-05 14:30          │
+│                                     │
+├─────────────────────────────────────┤
+│  切片列表 (47)          [搜索切片内容]  │
+│                                     │
+│  ┌─ 切片 #1                         │
+│  │  JVM（Java Virtual Machine）是    │
+│  │  Java 程序的运行环境。它提供了...   │
+│  │  字符数：342                       │
+│  ├─ 切片 #2                         │
+│  │  Java 内存模型规定了 Java 程序     │
+│  │  中各个变量的访问规则...            │
+│  │  字符数：287                       │
+│  ├─ 切片 #3                         │
+│  │  垃圾回收（GC）是 JVM 自动管理     │
+│  │  内存的机制。当对象不再被...        │
+│  │  字符数：415                       │
+│  └─ ...                             │
+│                                     │
+│  [加载更多] / [分页器]                │
+└─────────────────────────────────────┘
+```
+
+### 10.3 后端 API
+
+| 方法 | 路径 | 说明 | 响应 |
+|------|------|------|------|
+| GET | `/api/knowledge/documents/{taskId}/chunks` | 获取文档切片列表 | `ChunkListVO` |
+| GET | `/api/knowledge/documents/{taskId}/chunks/{chunkIndex}` | 获取单个切片详情 | `ChunkVO` |
+
+Query 参数：`page, size, keyword`（可选，搜索切片内容）
+
+**ChunkListVO**：
+```json
+{
+  "taskId": "task-xxx",
+  "fileName": "JVM详解.pdf",
+  "totalChunks": 47,
+  "chunks": [
+    {
+      "chunkIndex": 1,
+      "content": "JVM（Java Virtual Machine）是...",
+      "charCount": 342,
+      "scopeType": "user"
+    }
+  ],
+  "total": 47
+}
+```
+
+### 10.4 后端实现
+
+在现有 `KnowledgeController` 中新增切片查询接口。实现逻辑：
+
+1. 根据 taskId 从 MySQL `document_metadata` 获取文档信息
+2. 根据 taskId 在 ES 中查询该文档的切片（索引为 `fish-user-knowledge` 或 `fish-public-knowledge`，按 scopeType 区分）
+3. 按分页返回切片内容
+
+无需新增 entity/mapper，直接复用现有 ES 操作。
+
+### 10.5 前端实现
+
+**新增文件**：
+
+| 文件 | 职责 |
+|------|------|
+| `src/components/ChunkDetailPanel.vue` | 切片详情侧面板（切片列表 + 搜索 + 分页） |
+
+**修改文件**：
+
+| 文件 | 变更 |
+|------|------|
+| `src/views/KnowledgeView.vue` | 表格新增「查看切片」按钮列，挂载 ChunkDetailPanel |
+| `src/api/knowledge.ts` | 新增 `getDocumentChunks` 和 `getChunkDetail` API |
+
+---
+
+_设计文档 · 知识卡片 · v4.1 · 2026-06-06_
