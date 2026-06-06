@@ -975,4 +975,162 @@ Query 参数（chunks）：`page, size, keyword, groupIndex`（可选，按分�
 
 ---
 
+## 11. 实施阶段
+
+按依赖关系和交付价值分为 5 个阶段，每阶段产出一个可体验的增量。
+
+### 阶段 1：卡片基础系统
+
+**做什么**：
+
+| 层 | 内容 |
+|---|------|
+| 数据层 | MySQL 建表 `knowledge_card` + `card_relation`（见 3.1）；创建 ES 索引 `fish-knowledge-card`（见 3.2） |
+| 后端 | 新建 `card` 包（见 6.1）：Entity / Mapper / DTO / Service / Controller；实现全套 CRUD API + Stats API（见 5.1、5.4） |
+| 前端 | 新增路由 `/cards`；新建 KnowledgeCardView + CardGrid + CardDetailPanel + CardCreateDialog + EmptyCardGuide（见 7.2） |
+| 导航 | AppHeader 新增知识卡片按钮；DrawerSidebar 新增入口（见 7.1） |
+| 前端 API | 新建 `src/api/card.ts`（见 7.2） |
+
+**注意什么**：
+- ES 索引 mapping 必须在建表时一步到位，后续改 mapping 需要 reindex 很麻烦
+- CardDetailPanel 的关联列表区域预留空位，阶段 2 才有数据填充
+- CardCreateDialog 的分组选择先做成自由输入的 el-select（无预设选项），阶段 2 加入 AI 自动建议后才从 stats API 拉取已有分组
+- 统计概览条直接调 `/api/card/stats`，阶段 1 只有手动创建的卡片，数据量少但功能链路完整
+
+**做到什么结果**：
+- 用户可以从三个入口（AppHeader / DrawerSidebar / 手动输入 URL）进入知识卡片页
+- 首次进入看到空状态引导页，点击可跳转聊天页或打开创建对话框
+- 可以手动创建/编辑/删除卡片，卡片详情面板可查看完整内容
+- 统计概览条实时反映卡片数量
+- 切换明暗主题卡片页样式正常
+
+---
+
+### 阶段 2：AI 提取管线
+
+**做什么**：
+
+| 层 | 内容 |
+|---|------|
+| 提取核心 | CardExtractService：对话加载策略（见 4.2）+ LLM prompt（见 4.3）+ JSON 解析 + 写 MySQL |
+| 关联建立 | 内部关联（同批次卡片间）+ 外部关联（embedding → ES 向量检索，见 4.4 步骤 6-7） |
+| 前端入口 | ChatView 新增「提取知识卡片」按钮 + 被动提示（≥8 轮 + 知识性关键词，见 4.1） |
+| 即时预览 | CardExtractPreview 组件：勾选 + 行内编辑 + 确认/取消（见 7.4） |
+| 批量操作 | batch-confirm / batch-reject API + 前端勾选操作栏 |
+| 去重 | 卡片合并 API（见 5.3）+ CardDetailPanel 疑似重复提示 + 合并入口 |
+| 分组 | Prompt 中 group_name 规则（见 4.3 规则 8）+ 前端分组 Tab（从 stats.groups 动态生成） |
+| 关联展示 | CardDetailPanel 关联列表填充（见 7.4 卡片详情面板） |
+
+**注意什么**：
+- **LLM 输出格式不稳定**是最大风险。必须加 JSON schema 校验 + 降级处理（跳过无效卡片保留有效的）。建议用 few-shot prompt 给 2-3 个示例稳定输出格式
+- 对话加载策略中，长对话的"摘要生成"是额外一次 LLM 调用，注意控制延迟。可考虑前端提取按钮点击后显示 loading + 预估耗时
+- 外部关联的 ES 向量检索依赖 `fish-knowledge-card` 索引有数据。阶段 1 手动创建的卡片如果不进 ES（因为手动创建直接 confirmed），需要确保手动创建也同步写 ES
+- 被动提示的条件判断在前端做，不需要后端接口
+- Prompt 中的 group_name 规则需要测试——不同对话 AI 可能给同一领域起不同的分组名。可考虑在 prompt 中加入"如果用户已有以下分组，优先使用已有名称：{existing_groups}"
+
+**做到什么结果**：
+- 用户在聊天页点击提取按钮 → 看到 loading → 弹出预览面板列出提取的卡片
+- 可以取消勾选/行内编辑 → 确认后卡片入库（confirmed 或 pending）
+- 待确认卡片在卡片页有黄色标识，支持批量确认/拒绝
+- 卡片详情面板显示关联列表（关系类型 + 置信度），疑似重复有合并入口
+- 卡片列表顶部显示分组 Tab，按分组筛选
+
+---
+
+### 阶段 3：知识图谱可视化
+
+**做什么**：
+
+| 层 | 内容 |
+|---|------|
+| 依赖安装 | `vis-network` + `vis-data`（见 8） |
+| 图谱组件 | CardGraphView：力导向布局 + 节点/连线样式 + 全部交互（见 7.4 图谱视图） |
+| 视图切换 | KnowledgeCardView 顶部增加 [卡片视图] [图谱视图] Tab |
+| 数据加载 | 前端调 list + relations API，组装为 vis-network nodes + edges |
+
+**注意什么**：
+- 数据加载策略：取 status=confirmed 的全部卡片（不分页）+ 全部关联，前端全量组装。个人卡片量级几十到几百，性能没问题。如果未来卡片过千需要考虑后端聚合
+- vis-network 的节点 label 默认不截断，需要手动设置 `font.multi: true` + `label` 截断处理
+- 全屏模式用 `document.documentElement.requestFullscreen()` 实现，不需要新路由
+- 节点的渐变填充（topic 类型）需要用 vis-network 的 `background` 属性 + Canvas 渲染，不能直接用 CSS 变量，需要硬编码色值但做主题切换监听
+- 图谱视图和卡片视图共用 CardDetailPanel（双击节点打开详情），注意面板状态管理
+
+**做到什么结果**：
+- 卡片页顶部可切换到图谱视图
+- 力导向图展示所有 confirmed 卡片和关联关系
+- 4 种关系类型用不同颜色/虚实/箭头区分
+- 节点可拖拽、画布可缩放平移、悬浮显示 tooltip
+- 单击弹出浮层、双击打开右侧详情面板
+- 可按关系类型筛选连线、可全屏
+
+---
+
+### 阶段 4：RAG 闭环 + 复习模式
+
+**做什么**：
+
+| 层 | 内容 |
+|---|------|
+| RAG 扩展 | 新增 `UserKnowledgeCardSearcher`（见 6.2），注册到 `RagRecall` 并行检索源 |
+| ES 同步 | confirm 时生成 embedding 写 ES；delete/reject 时从 ES 移除；编辑已确认卡片时更新 ES |
+| 复习模式 | CardReviewMode 组件：逐张翻转 + 忘了/模糊/熟悉 + 轮次逻辑（见 7.4 复习模式） |
+
+**注意什么**：
+- RAG 扩展的关键风险是 **干扰原有检索质量**。知识卡片可能和知识库切片内容重复，导致 RAG 注入冗余上下文。解决方案：rerank 阶段自然会去重（相似内容得分相近只保留 top N）；fusion 阶段的 RRF 算法也能缓解。但仍需在上线后观察 RAG tracing 数据
+- confirm 时生成 embedding 是异步操作（调 DashScope API），如果失败不应阻塞 confirm 本身，应记录日志后续补偿
+- 复习模式是纯前端逻辑，刷新页面进度丢失。UI 上需要提示"本次复习进度不会保存"
+- 复习模式的卡片来源：当前分组筛选 + status=confirmed，避免把 pending 卡片也拿来复习
+
+**做到什么结果**：
+- 确认知识卡片后，AI 在后续对话中可以引用该卡片的内容（RAG tracing 可验证）
+- 删除/拒绝卡片后，AI 不再引用
+- 知识卡片页点击复习按钮进入复习模式，逐张翻转，标记掌握程度
+- RAG 检索日志（fish-rag-trace）中能看到 knowledge-card 索引的命中记录
+
+---
+
+### 阶段 5：知识库切片可视化 + 切片↔卡片桥接
+
+**做什么**：
+
+| 层 | 内容 |
+|---|------|
+| 主题分组 | K-Means 聚类服务（后端）+ Redis 缓存 + 分组 API（见 10.4） |
+| 两级浏览 | ChunkDetailPanel：文档概览 → 主题分组 → 展开切片（见 10.2） |
+| 切片→卡片 | 切片 embedding 向量检索 fish-knowledge-card，前端展示关联卡片（见 10.3 方向 A） |
+| 卡片→切片 | CardVO 扩展 relatedChunks，CardDetailPanel 新增"源文档切片"区域（见 10.3 方向 B） |
+| 前端组件 | ChunkDetailPanel + ChunkCardLinks（见 10.6） |
+| 入口 | KnowledgeView 表格新增「查看切片」按钮列 |
+
+**注意什么**：
+- K-Means 聚类的 **k 值选择**：用 `k = min(8, max(2, chunkCount / 5))`。切片数 < 10 时不聚类，直接平铺；切片数多时上限 8 组避免碎片化
+- 聚类结果缓存到 Redis（TTL 24h），文档被删除时清除对应缓存 key
+- 切片→卡片的向量检索和卡片→切片的检索都是**动态计算**，不存关联表。好处是自动更新，坏处是每次查看都有 ES 查询开销。可在前端加 debounce（展开切片时才查关联，不是预加载全部）
+- 分组标题由 LLM 生成是额外调用，控制 prompt 简短（输入前 3 个切片各取前 100 字，输出 ≤10 字标题），批量一次调完（一个文档的所有组）
+- AI 摘要（文档概览顶部）也是首次打开时生成并缓存，避免每次重复调用
+- 知识库切片可视化和知识卡片是两个不同页面，跳转时注意路由传参（taskId、chunkIndex）
+
+**做到什么结果**：
+- KnowledgeView 的文档表格新增「查看切片」按钮（仅 SUCCESS 状态显示）
+- 点击后右侧弹出切片面板：顶部文档概览 + AI 摘要，中部主题分组列表
+- 展开某个分组显示切片列表，每个切片显示关联卡片数量
+- 点击关联卡片可跳转到知识卡片页并打开对应卡片详情
+- 知识卡片详情中，source_type=knowledge 的卡片显示"源文档切片"区域，可跳转回切片面板
+
+---
+
+### 阶段依赖图
+
+```
+阶段 1（基础）
+  ↓
+阶段 2（AI 提取）
+  ↓       ↓
+阶段 3（图谱）  阶段 4（RAG + 复习）  ← 可并行
+          ↓
+       阶段 5（切片可视化）  ← 依赖卡片 embedding 向量检索能力
+```
+
+---
+
 _设计文档 · 知识卡片 · v4.1 · 2026-06-06_
