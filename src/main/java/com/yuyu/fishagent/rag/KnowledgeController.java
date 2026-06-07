@@ -11,9 +11,13 @@ import com.yuyu.fishagent.rag.dto.MultipartCompleteRequest;
 import com.yuyu.fishagent.rag.dto.MultipartInitRequest;
 import com.yuyu.fishagent.rag.dto.MultipartInitResponse;
 import com.yuyu.fishagent.rag.dto.MultipartPartResponse;
+import com.yuyu.fishagent.rag.dto.ChunkGroupVO;
+import com.yuyu.fishagent.rag.dto.ChunkListVO;
+import com.yuyu.fishagent.rag.dto.RelatedCardVO;
 import com.yuyu.fishagent.rag.entity.DocumentMetadata;
 import com.yuyu.fishagent.auth.enums.UserRole;
 import com.yuyu.fishagent.rag.mapper.DocumentMetadataMapper;
+import com.yuyu.fishagent.rag.service.ChunkClusterService;
 import com.yuyu.fishagent.rag.service.KnowledgeIngestionService;
 import com.yuyu.fishagent.rag.service.KnowledgeManageService;
 import com.yuyu.fishagent.rag.service.MultipartInitResult;
@@ -31,6 +35,7 @@ import org.springframework.web.multipart.MultipartFile;
 import org.springframework.web.server.ResponseStatusException;
 
 import java.io.InputStream;
+import java.util.List;
 import java.util.Objects;
 
 import static org.springframework.http.HttpStatus.FORBIDDEN;
@@ -45,6 +50,7 @@ public class KnowledgeController {
 
     private final KnowledgeIngestionService knowledgeIngestionService;
     private final KnowledgeManageService knowledgeManageService;
+    private final ChunkClusterService chunkClusterService;
     private final DocumentMetadataMapper documentMetadataMapper;
 
     @PostMapping(value = "/api/knowledge/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
@@ -161,6 +167,38 @@ public class KnowledgeController {
         UserContext ctx = UserContextHolder.get();
         Long uid = ctx == null ? null : ctx.userId();
         knowledgeManageService.deleteByTaskId(taskId, uid, isAdmin());
+    }
+
+    /**
+     * 文档切片主题分组：聚类结果由服务层缓存，Controller 只负责当前用户上下文透传。
+     */
+    @GetMapping("/api/knowledge/documents/{taskId}/chunks/groups")
+    public ChunkGroupVO chunkGroups(@PathVariable String taskId) {
+        UserContext ctx = UserContextHolder.get();
+        return chunkClusterService.getGroups(taskId, ctx == null ? null : ctx.userId(), isAdmin());
+    }
+
+    /**
+     * 文档切片列表：支持按主题分组和关键词筛选。
+     */
+    @GetMapping("/api/knowledge/documents/{taskId}/chunks")
+    public ChunkListVO chunks(
+            @PathVariable String taskId,
+            @RequestParam(required = false) Integer groupIndex,
+            @RequestParam(required = false) String keyword,
+            @RequestParam(defaultValue = "1") int page,
+            @RequestParam(defaultValue = "20") int size) {
+        UserContext ctx = UserContextHolder.get();
+        return chunkClusterService.getChunks(taskId, groupIndex, keyword, page, size, ctx == null ? null : ctx.userId(), isAdmin());
+    }
+
+    /**
+     * 单个切片的相似知识卡片。
+     */
+    @GetMapping("/api/knowledge/chunks/{taskId}/{chunkIndex}/related-cards")
+    public List<RelatedCardVO> relatedCards(@PathVariable String taskId, @PathVariable Integer chunkIndex) {
+        UserContext ctx = UserContextHolder.get();
+        return chunkClusterService.getRelatedCards(taskId, chunkIndex, ctx == null ? null : ctx.userId(), isAdmin());
     }
 
     @GetMapping("/api/knowledge/tasks/{taskId}")

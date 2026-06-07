@@ -121,7 +121,11 @@ class DocumentMetadataRepository:
         conn = getattr(self._local, "conn", None)
         if conn is None:
             return
+        self._local.conn = None
         try:
-            conn.close()
-        finally:
-            self._local.conn = None
+            # conn.open 是 PyMySQL 提供的属性，True 表示连接仍然存活。
+            # 已关闭的连接直接跳过，避免 pymysql.err.Error("Already closed")。
+            if getattr(conn, "open", False):
+                conn.close()
+        except Exception:
+            pass

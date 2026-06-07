@@ -43,7 +43,14 @@ public class DashScopeRagReranker implements RagReranker {
             return fallback;
         }
         if (!cfg.isEnabled() || cfg.getApiKey() == null || cfg.getApiKey().isBlank()) {
+            log.debug("[RagReranker] 精排未启用或无 apiKey，跳过精排 candidates={}", candidates.size());
             return fallback;
+        }
+
+        if (log.isDebugEnabled()) {
+            String queryPreview = query.length() > 60 ? query.substring(0, 60) + "…" : query;
+            log.debug("[RagReranker] 开始精排 candidates={}, topN={}, model={}, query=[{}]",
+                    candidates.size(), limit, cfg.getModel(), queryPreview);
         }
 
         try {
@@ -72,6 +79,17 @@ public class DashScopeRagReranker implements RagReranker {
             }
 
             List<RagRecall.RecallHit> reranked = reorderByResults(candidates, results, limit);
+            if (log.isDebugEnabled() && !reranked.isEmpty()) {
+                log.debug("[RagReranker] 精排完成 input={}, output={}, topScore={}, lowestScore={}",
+                        candidates.size(), reranked.size(),
+                        String.format("%.4f", reranked.get(0).score()),
+                        String.format("%.4f", reranked.get(reranked.size() - 1).score()));
+                for (int i = 0; i < Math.min(5, reranked.size()); i++) {
+                    RagRecall.RecallHit h = reranked.get(i);
+                    log.debug("[RagReranker]   #{} id={}, relevanceScore={}",
+                            i + 1, h.id(), String.format("%.4f", h.score()));
+                }
+            }
             return reranked.isEmpty() ? fallback : reranked;
         } catch (RuntimeException e) {
             if (cfg.isFallbackOnError()) {

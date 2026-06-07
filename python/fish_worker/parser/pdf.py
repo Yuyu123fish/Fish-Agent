@@ -37,6 +37,7 @@ log = logging.getLogger(__name__)
 _MIN_TEXT_CHARS = 50
 _CID_RATIO_THRESHOLD = 0.05
 _GARBLED_RATIO_THRESHOLD = 0.05
+_NOISY_SCRIPT_RATIO_THRESHOLD = 0.12
 _CID_PATTERN = re.compile(r"\(cid:\d+\)")
 
 
@@ -53,11 +54,90 @@ def has_garbled_unicode(text: str, threshold: float = _GARBLED_RATIO_THRESHOLD) 
     return bad / len(text) > threshold
 
 
+def _is_common_script_char(ch: str) -> bool:
+    """判断字符是否属于中文/英文文档中常见的 Unicode 区段。
+
+    不在此范围内的字符（泰文、缅甸文、阿拉伯文、埃塞俄比亚文等冷门文字）
+    如果大量出现，几乎可以确定是 PDF 字体 CMap 映射错误导致的乱码。
+    """
+    cp = ord(ch)
+    # Basic ASCII（英文字母、数字、常用标点）
+    if cp <= 0x007F:
+        return True
+    # Latin-1 Supplement（部分西欧字符，如 é ñ）
+    if 0x00A0 <= cp <= 0x00FF:
+        return True
+    # Latin Extended（常见于学术论文的人名、术语）
+    if 0x0100 <= cp <= 0x024F:
+        return True
+    # 通用标点（em dash、引号、省略号等）
+    if 0x2000 <= cp <= 0x206F:
+        return True
+    # 上标/下标、货币符号、箭头、数学符号、杂项技术符号
+    if 0x2070 <= cp <= 0x20CF:
+        return True
+    # CJK 标点符号（「」、。，、；：等）
+    if 0x3000 <= cp <= 0x303F:
+        return True
+    # 日文平假名 / 片假名（中日混排文档常见）
+    if 0x3040 <= cp <= 0x30FF:
+        return True
+    # CJK Unified Ideographs 及扩展区（中日韩汉字）
+    if 0x3400 <= cp <= 0x4DBF:
+        return True
+    if 0x4E00 <= cp <= 0x9FFF:
+        return True
+    if 0xF900 <= cp <= 0xFAFF:
+        return True
+    # CJK Compatibility Forms（如 ︰﹏）
+    if 0xFE30 <= cp <= 0xFE4F:
+        return True
+    # 半角/全角形式（！＂＃￥等）
+    if 0xFF00 <= cp <= 0xFFEF:
+        return True
+    # CJK Extension B-I（罕见汉字，学术论文偶尔出现）
+    if 0x20000 <= cp <= 0x2FA1F:
+        return True
+    return False
+
+
+def has_noisy_scripts(text: str, threshold: float = _NOISY_SCRIPT_RATIO_THRESHOLD) -> bool:
+    """检测文本中是否混入大量非常见文字区段字符。
+
+    PDF 字体 CMap 损坏时，PyMuPDF 会把错误的 glyph ID 映射到泰文、缅甸文、
+    阿拉伯文、埃塞俄比亚文等冷门 Unicode 区段，产出的文本看起来像各种语言的
+    字符随机拼凑。这种乱码不包含 (cid:N) 和 U+FFFD，因此原有的两个检查
+    无法捕获；但通过统计"非常见区段"字符占比可以有效识别。
+    """
+    if not text:
+        return False
+    total = 0
+    noisy = 0
+    for ch in text:
+        # 跳过空白字符（空格、换行、制表符），它们不属于任何文字区段
+        if ch in (" ", "\n", "\r", "\t"):
+            continue
+        total += 1
+        if not _is_common_script_char(ch):
+            noisy += 1
+    if total == 0:
+        return False
+    ratio = noisy / total
+    if ratio > threshold:
+        log.info(
+            "noisy script detected: ratio=%.3f noisy=%d total=%d sample=%r",
+            ratio, noisy, total, text[:80],
+        )
+        return True
+    return False
+
+
 def should_use_ocr(
     text: str,
     *,
     min_chars: int = _MIN_TEXT_CHARS,
     cid_ratio: float = _CID_RATIO_THRESHOLD,
+    noisy_ratio: float = _NOISY_SCRIPT_RATIO_THRESHOLD,
 ) -> bool:
     """判断 PDF 文本层是否需要回退 OCR。阈值偏保守，宁可多 OCR 也不写入乱码。"""
     stripped = (text or "").strip()
@@ -66,6 +146,8 @@ def should_use_ocr(
     if count_cid_residuals(stripped) / max(1, len(stripped)) > cid_ratio:
         return True
     if has_garbled_unicode(stripped):
+        return True
+    if has_noisy_scripts(stripped, threshold=noisy_ratio):
         return True
     return False
 

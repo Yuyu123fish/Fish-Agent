@@ -4,9 +4,9 @@
  * 上传逻辑复用 KnowledgeUpload，列表与删除通过 knowledgeApi。
  */
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Refresh } from '@element-plus/icons-vue'
+import { Refresh, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { useAuthStore } from '@/store/auth'
 import * as knowledgeApi from '@/api/knowledge'
@@ -14,8 +14,10 @@ import type { DocumentMetadataItem } from '@/api/knowledge'
 import KnowledgeUpload from '@/components/KnowledgeUpload.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import DrawerSidebar from '@/components/DrawerSidebar.vue'
+import ChunkDetailPanel from '@/components/ChunkDetailPanel.vue'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const { role } = storeToRefs(auth)
 
@@ -27,6 +29,9 @@ const records = ref<DocumentMetadataItem[]>([])
 const total = ref(0)
 const page = ref(1)
 const pageSize = ref(20)
+const chunkPanelVisible = ref(false)
+const activeChunkTaskId = ref<string | null>(null)
+const focusChunkIndex = ref<number | null>(null)
 
 async function loadList() {
   loading.value = true
@@ -44,8 +49,12 @@ async function loadList() {
   }
 }
 
-onMounted(() => void loadList())
+onMounted(async () => {
+  await loadList()
+  openChunksFromRoute()
+})
 watch([page, pageSize], () => void loadList())
+watch(() => route.query.openChunks, () => openChunksFromRoute())
 
 function onTabChange() {
   if (page.value === 1) {
@@ -91,6 +100,29 @@ async function onDelete(row: DocumentMetadataItem) {
 function goChat() {
   void router.push('/chat')
 }
+
+function openChunkDetail(taskId: string, chunkIndex?: number | null) {
+  activeChunkTaskId.value = taskId
+  focusChunkIndex.value = chunkIndex ?? null
+  chunkPanelVisible.value = true
+}
+
+function closeChunkDetail() {
+  chunkPanelVisible.value = false
+  activeChunkTaskId.value = null
+  focusChunkIndex.value = null
+}
+
+function openChunksFromRoute() {
+  const taskId = typeof route.query.openChunks === 'string' ? route.query.openChunks : null
+  if (!taskId) return
+  const rawChunkIndex = typeof route.query.chunkIndex === 'string' ? Number(route.query.chunkIndex) : null
+  openChunkDetail(taskId, Number.isFinite(rawChunkIndex) ? rawChunkIndex : null)
+}
+
+function openCardFromChunk(cardId: number) {
+  void router.push({ path: '/cards', query: { openCard: String(cardId) } })
+}
 </script>
 
 <template>
@@ -131,8 +163,18 @@ function goChat() {
           <template #default="{ row }">{{ row.chunkCount ?? '—' }}</template>
         </el-table-column>
         <el-table-column prop="updatedAt" label="更新时间" width="170" />
-        <el-table-column label="操作" width="100" fixed="right">
+        <el-table-column label="操作" width="160" fixed="right">
           <template #default="{ row }">
+            <el-button
+              v-if="row.status === 'SUCCESS'"
+              type="primary"
+              link
+              size="small"
+              @click="openChunkDetail(row.taskId)"
+            >
+              <el-icon><View /></el-icon>
+              查看切片
+            </el-button>
             <el-button type="danger" link size="small" @click="onDelete(row)">删除</el-button>
           </template>
         </el-table-column>
@@ -151,6 +193,14 @@ function goChat() {
       </div>
     </div>
   </div>
+
+  <ChunkDetailPanel
+    :visible="chunkPanelVisible"
+    :task-id="activeChunkTaskId"
+    :focus-chunk-index="focusChunkIndex"
+    @close="closeChunkDetail"
+    @open-card="openCardFromChunk"
+  />
 </template>
 
 <style scoped>

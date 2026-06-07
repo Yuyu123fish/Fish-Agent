@@ -18,7 +18,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * 召回与编排装配：虚拟线程池、三路 {@link RagRecall.DocumentSearcher}（用户记忆 / 用户知识库 / 公共知识）、
+ * 召回与编排装配：虚拟线程池、四路 {@link RagRecall.DocumentSearcher}（用户记忆 / 用户知识库 / 知识卡片 / 公共知识）、
  * 对 Chat 暴露的 {@link RagRecall.Augmentation}。
  */
 @Configuration
@@ -48,6 +48,7 @@ public class RagRecallConfiguration {
             RagQueryExpand.SubQueryExpander subQueryExpander,
             UserMemoryElasticsearchSearcher userMemoryElasticsearchSearcher,
             UserKnowledgeElasticsearchSearcher userKnowledgeElasticsearchSearcher,
+            UserKnowledgeCardSearcher userKnowledgeCardSearcher,
             PublicKnowledgeElasticsearchSearcher publicKnowledgeElasticsearchSearcher,
             ObjectProvider<ElasticsearchOperations> operationsProvider,
             @Qualifier("ragRecallExecutor") ExecutorService ragRecallExecutor,
@@ -60,6 +61,7 @@ public class RagRecallConfiguration {
                 subQueryExpander,
                 userMemoryElasticsearchSearcher,
                 userKnowledgeElasticsearchSearcher,
+                userKnowledgeCardSearcher,
                 publicKnowledgeElasticsearchSearcher,
                 operationsProvider,
                 ragRecallExecutor,

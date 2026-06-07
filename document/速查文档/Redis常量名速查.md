@@ -1,12 +1,14 @@
 # Redis 常量 / Key 速查
 
-本文档对应后端 Java + Python Worker 代码中实际使用 Redis 的 **key / Stream / Group 命名**（截至 v2.1）。
+本文档对应后端 Java + Python Worker 代码中实际使用 Redis 的 **key / Stream / Group 命名**（截至 v4.2）。
 
 当前项目 Redis 用途：
 - **登录会话** (token → UserContext JSON)
 - **短期记忆** (摘要 + 消息窗口)
 - **文档入库 Stream** (Java 投递, Python Worker 消费)
 - **对话限流** (v2.3：令牌桶 + SSE 并发计数器)
+- **会话互斥锁** (v2.4：同一会话同时只有一个 SSE 流)
+- **切片聚类缓存** (v4.2：K-Means 分组结果 24h 缓存)
 
 ---
 
@@ -134,6 +136,30 @@ Value 为 `UserContext` 的 JSON 序列化: `{"userId":1,"username":"admin","nic
 - `fish:ratelimit:token:5` → Hash `{"tokens": "42.5", "lastRefillTime": "1746500000000"}`
 - `fish:ratelimit:sse:5` → String `"1"`（1 路活跃 SSE）
 
+### 2.5 会话互斥锁 (v2.4+)
+
+前缀 `fish:mutex`，按 `{userId}` + `{sessionId}` 隔离。
+
+| 用途 | Key 模式 | 类型 | 代码位置 |
+|------|----------|------|----------|
+| 会话互斥锁 | `fish:mutex:session:{userId}:{sessionId}` | String (NX) | `RateLimitService.tryAcquireSessionLock()` |
+
+**操作语义**：
+- `SET NX EX 120` 获取锁（120s TTL 兜底）
+- 正常路径：SSE 结束时 `DEL` 释放（`releaseSseSlotOnce` 合并释放）
+- 异常路径：120s TTL 自动过期，防止死锁
+
+### 2.6 切片聚类缓存 (v4.2+)
+
+| 用途 | Key 模式 | 类型 | TTL | 代码位置 |
+|------|----------|------|-----|----------|
+| K-Means 聚类结果 | `fish:chunk:clusters:{taskId}` | String (JSON) | 24h | `ChunkClusterService` |
+
+**操作语义**：
+- 文档切片 K-Means 聚类 + LLM 标题摘要较重（数秒），结果缓存 24h
+- 文档删除时清除对应缓存
+- 缓存未命中时重新计算并写入
+
 ---
 
 ## 三、非 Key: 连接与库号
@@ -154,7 +180,9 @@ Python Worker 通过环境变量 `REDIS_HOST/PORT/PASSWORD/DATABASE` 连接同�
 | 文档解析 Stream | `fish:doc:ingest` (Stream) / `fish-doc-worker-group` (Group) |
 | 用户 5 的令牌桶 | `fish:ratelimit:token:5` (Hash) |
 | 用户 5 的 SSE 并发计数 | `fish:ratelimit:sse:5` (String) |
+| 用户 5 会话 abc-123 的互斥锁 | `fish:mutex:session:5:abc-123` (String NX, TTL 120s) |
+| 文档 task-xyz 的切片聚类缓存 | `fish:chunk:clusters:task-xyz` (String JSON, TTL 24h) |
 
 ---
 
-_文档版本：v2.3 · 更新日期：2026-05-06_
+_文档版本：v4.2 · 更新日期：2026-06-07_

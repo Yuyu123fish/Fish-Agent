@@ -42,6 +42,7 @@ public class KnowledgeManageService {
     private final KnowledgeProperties knowledgeProperties;
     private final MemoryProperties memoryProperties;
     private final ObjectProvider<RustFsService> rustFsProvider;
+    private final ChunkClusterService chunkClusterService;
 
     /**
      * 当前用户可见的上传任务（按更新时间倒序）。
@@ -85,6 +86,7 @@ public class KnowledgeManageService {
 
         deleteEsChunks(row);
         deleteRustFsQuietly(row);
+        chunkClusterService.evictClusterCache(row.getTaskId());
         documentMetadataMapper.delete(Wrappers.<DocumentMetadata>lambdaQuery()
                 .eq(DocumentMetadata::getTaskId, row.getTaskId()));
         log.info("[KnowledgeManage] 已删除文档任务 taskId={}, scope={}", row.getTaskId(), row.getScopeType());

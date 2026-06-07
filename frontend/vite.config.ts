@@ -5,13 +5,17 @@ import Components from 'unplugin-vue-components/vite'
 import { ElementPlusResolver } from 'unplugin-vue-components/resolvers'
 import { fileURLToPath, URL } from 'node:url'
 
-export default defineConfig({
+export default defineConfig(({ command }) => ({
   plugins: [
     vue(),
     AutoImport({
+      // 生产构建前已经执行 vue-tsc；build 阶段不再写声明文件，避免 Windows 文件锁导致构建偶发失败。
+      dts: command === 'serve',
       resolvers: [ElementPlusResolver()]
     }),
     Components({
+      // 开发服务仍自动刷新组件声明；生产构建只消费现有声明，保持构建过程只读且更稳定。
+      dts: command === 'serve',
       resolvers: [ElementPlusResolver()]
     })
   ],
@@ -30,4 +34,4 @@ export default defineConfig({
       }
     }
   }
-})
+}))

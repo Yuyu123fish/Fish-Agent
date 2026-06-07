@@ -1,8 +1,8 @@
-# 模块 7：RAG 检索增强管线
+﻿# 模块 7：RAG 检索增强管线
 
 ## 一句话定位
 
-**查询分解 → 三索引双路并发召回 → RRF 分数融合 → Cross-Encoder 精排 → Top-K 注入 SystemMessage** 五级管线，配合 **HyDE 假设性答案增强** 与 **ES 异步质量追踪**，实现数据驱动的检索闭环。
+**查询分解 → 四索引双路并发召回 → RRF 分数融合 → Cross-Encoder 精排 → Top-K 注入 SystemMessage** 五级管线，配合 **HyDE 假设性答案增强** 与 **ES 异步质量追踪**，实现数据驱动的检索闭环。
 
 ---
 
@@ -33,10 +33,11 @@ flowchart TB
         HD_EMB["用假设答案 embedding<br/>替代原 query embedding"]
     end
 
-    subgraph Recall["三索引双路并发召回"]
+    subgraph Recall["四索引双路并发召回"]
         S1["UserMemorySearcher<br/>fish-user-memory"]
         S2["UserKnowledgeSearcher<br/>fish-user-knowledge"]
-        S3["PublicKnowledgeSearcher<br/>fish-public-knowledge"]
+        S3["UserKnowledgeCardSearcher<br/>fish-knowledge-card"]
+        S4["PublicKnowledgeSearcher<br/>fish-public-knowledge"]
         T["文本路：match(content)"]
         V["向量路：knn(embedding)"]
     end
@@ -104,6 +105,7 @@ sequenceDiagram
     loop 每条子查询（并发，虚拟线程）
         Recall->>ES: UserMemory: match + knn
         Recall->>ES: UserKnowledge: match + knn
+        Recall->>ES: UserKnowledgeCard: match(title+content+keywords) + knn
         Recall->>ES: PublicKnowledge: match + knn
     end
     ES-->>Recall: 多路 RecallHit 列表
@@ -129,7 +131,7 @@ sequenceDiagram
 
 ---
 
-## 流程图：三路并发召回
+## 流程图：四路并发召回
 
 ```mermaid
 flowchart LR
@@ -137,10 +139,11 @@ flowchart LR
         Q["子查询列表（1-4 条）"]
     end
 
-    subgraph Search["三索引并发（每子查询 6 路）"]
+    subgraph Search["四索引并发（每子查询 8 路）"]
         S1["UserMemorySearcher<br/>filter: user_id + source_type=chat"]
         S2["UserKnowledgeSearcher<br/>filter: user_id"]
-        S3["PublicKnowledgeSearcher<br/>无 filter"]
+        S3["UserKnowledgeCardSearcher<br/>filter: user_id + confirmed"]
+        S4["PublicKnowledgeSearcher<br/>无 filter"]
         T1["文本路：match(content)"]
         V1["向量路：knn(embedding, numCandidates=120)"]
     end
@@ -152,8 +155,8 @@ flowchart LR
         Inject["注入 SystemMessage"]
     end
 
-    Q --> S1 & S2 & S3
-    S1 & S2 & S3 --> T1 & V1
+    Q --> S1 & S2 & S3 & S4
+    S1 & S2 & S3 & S4 --> T1 & V1
     T1 & V1 --> Fusion --> Rerank --> TopK --> Inject
 ```
 
@@ -174,7 +177,7 @@ public record RecallHit(String id, String content, double score, String source) 
 **编排逻辑**：
 1. 查询扩展（`SubQueryExpander.expand()`）→ 得到子查询列表
 2. HyDE（可选）→ 生成假设性答案，替代原 query 做 embedding
-3. 每条子查询 → 3 索引 × 2 路 = 6 路并发检索（虚拟线程 + `CompletableFuture.allOf()`）
+3. 每条子查询 → 4 索引 × 2 路 = 8 路并发检索（虚拟线程 + `CompletableFuture.allOf()`）
 4. RRF 分数融合 → 候选池
 5. DashScope 精排 → Top-N
 6. `renderBlock()` 格式化为编号列表，拼入 SystemMessage
@@ -294,7 +297,40 @@ public List<RecallHit> rerank(String query, List<RecallHit> candidates, int topN
 | `timeout-seconds` | 5 | API 超时 |
 | `fallback-on-error` | true | 失败是否降级 |
 
-### 6. RAG 质量追踪（v3.6）
+### 6. UserKnowledgeCardSearcher — 知识卡片召回（v4.2）
+
+`[UserKnowledgeCardSearcher.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/recall/UserKnowledgeCardSearcher.java)`：
+
+与其他三个 Searcher 同构（实现 `DocumentSearcher` 接口），但有三个差异点：
+
+**① 三字段文本搜索**（title / content / keywords）：
+
+```java
+.should(s -> s.match(mt -> mt.field("title").query(subQueryText)))
+.should(s -> s.match(mt -> mt.field("content").query(subQueryText)))
+.should(s -> s.match(mt -> mt.field("keywords").query(subQueryText)))
+.minimumShouldMatch("1")
+```
+
+其他 Searcher 只搜 `content` 一个字段。卡片标题通常比内容更短更精确（如"TCP 三次握手"），单独搜索 title 能显著提高命中率。keywords 字段覆盖用户可能用别名检索的场景。
+
+**② confirmed 状态过滤**：
+
+```java
+.filter(f -> f.term(t -> t.field("status").value(KnowledgeCard.STATUS_CONFIRMED)))
+```
+
+pending 和 rejected 卡片不参与 RAG 检索，避免未审核内容污染对话上下文。
+
+**③ 事实文本格式**：
+
+```java
+"知识卡片《标题》：正文 关键词：xxx"
+```
+
+注入给模型时保留标题（`《标题》`）让模型能识别知识来源，关键词后缀补充语义信息。
+
+### 7. RAG 质量追踪（v3.6）
 
 `[RagQualityLogger.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/tracing/RagQualityLogger.java)` + `[RagTraceDocument.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/tracing/RagTraceDocument.java)`：
 
@@ -335,7 +371,7 @@ public List<RecallHit> rerank(String query, List<RecallHit> candidates, int topN
 
 - **查询扩展**：LLM 语义分解（默认） / TOKEN 词级 / IDENTITY 透传，三策略可切换
 - **HyDE**：生成假设性答案替代原 query embedding（默认关闭）
-- **三索引双路召回**：用户记忆 / 用户文档 / 公共知识 × 文本 / 向量，虚拟线程并发
+- **四索引双路召回**：用户记忆 / 用户文档 / 用户知识卡片 / 公共知识 × 文本 / 向量，虚拟线程并发
 - **RRF 分数融合**：统一 BM25 与 cosine 排名，候选池 poolSize=50
 - **DashScope 精排**：qwen3-rerank Cross-Encoder，top-n=8
 - **质量追踪**：19 字段异步写 ES，采样率可配
@@ -366,19 +402,21 @@ public List<RecallHit> rerank(String query, List<RecallHit> candidates, int topN
   ↓
 [HyDE] enabled=false → 跳过
   ↓
-[三路并发召回] 每条子查询 × 3 索引 × 2 路 = 12 路并发
+[四路并发召回] 每条子查询 × 4 索引 × 2 路 = 8 路并发
 
   子查询1: "Docker Compose 部署 Redis 配置方法"
     → UserMemorySearcher: match + knn → 10 hits
     → UserKnowledgeSearcher: match + knn → 8 hits
+    → UserKnowledgeCardSearcher: match(title+content+keywords) + knn → 3 hits
     → PublicKnowledgeSearcher: match + knn → 12 hits
 
   子查询2: "Redis 容器化部署最佳实践"
     → UserMemorySearcher: match + knn → 5 hits
     → UserKnowledgeSearcher: match + knn → 6 hits
+    → UserKnowledgeCardSearcher: match + knn → 2 hits
     → PublicKnowledgeSearcher: match + knn → 9 hits
   ↓
-[RRF 融合] 所有 6 路 × 2 子查询 = 12 批结果
+[RRF 融合] 所有 8 路 × 2 子查询 = 16 批结果
   → 各批按 score 降序排 rank
   → RRF 融合分: score = Σ 1/(60 + rank + 1)
   → 去重（同一 id 保留最高原始分代表）
@@ -462,7 +500,7 @@ public List<RecallHit> rerank(String query, List<RecallHit> candidates, int topN
 - **精排**：超时 5s / API 失败 → 截取融合池前 N 条（零延迟）
 - **追踪**：异步写 ES，完全不阻塞
 
-最坏情况（全链路开启且正常）：扩展 ~1s + 召回 ~50ms + 融合 ~5ms + 精排 ~500ms = ~1.5s。最佳情况（全降级）：~50ms（仅三路召回）。
+最坏情况（全链路开启且正常）：扩展 ~1s + 召回 ~60ms + 融合 ~5ms + 精排 ~500ms = ~1.5s。最佳情况（全降级）：~60ms（仅四路召回）。
 
 **Q：RRF 的 k=60 是怎么定的？**
 
@@ -481,14 +519,19 @@ k 是平滑常数——k 越大，top-1 和 top-2 的融合分差距越小（越
 
 `UserContextHolder`（ThreadLocal）在主线程由 `GlobalAuthInterceptor` 写入。RAG 检索在 `CompletableFuture.runAsync()` 中用虚拟线程执行，carrier thread 切换时 ThreadLocal 不保证传递。`RagRecall` 在进入异步前从 `UserContextHolder.get()` 快照 `userId` 到局部变量，在 lambda 内显式 `UserContextHolder.set(snapshot)` 回放，完成后 `UserContextHolder.clear()`。
 
-**Q：三索引分离的实际收益是什么？**
+**Q：四索引分离的实际收益是什么？**
 
-三种索引对应不同来源的知识、不同的写入方和不同的权限模型：
+四种索引对应不同来源的知识、不同的写入方和不同的权限模型：
 - `fish-user-memory`：对话事实（Java 写入），`user_id + source_type=chat` filter
 - `fish-user-knowledge`：用户文档切片（Python Worker 写入），`user_id` filter
+- `fish-knowledge-card`：用户知识卡片（Java 写入，confirmed 状态），`user_id + status=confirmed` filter
 - `fish-public-knowledge`：公共知识（管理员维护），无 filter
 
-分离后各自 DDL 独立演进、分片数可独立调整、写入方互不影响。
+分离后各自 DDL 独立演进、分片数可独立调整、写入方互不影响。知识卡片索引的 `status=confirmed` 过滤确保未审核内容不会注入对话上下文。
+
+**Q：知识卡片 Searcher 的三字段文本搜索为什么不同于其他 Searcher？**
+
+其他三个 Searcher 只搜 `content` 一个字段。卡片 Searcher 搜索 `title + content + keywords` 三个字段（`minimumShouldMatch=1`），因为卡片标题通常比内容更短更精确（如"TCP 三次握手"），如果只搜 content 可能漏召回。keywords 字段覆盖用户用别名检索的场景（卡片标记了"容器化"，用户搜"Docker"也能命中）。
 
 ---
 
@@ -500,6 +543,7 @@ k 是平滑常数——k 越大，top-1 和 top-2 的融合分差距越小（越
 | 召回配置 | `rag/pipeline/recall/RagRecallConfiguration.java` |
 | 用户记忆检索 | `rag/pipeline/recall/UserMemoryElasticsearchSearcher.java` |
 | 用户知识检索 | `rag/pipeline/recall/UserKnowledgeElasticsearchSearcher.java` |
+| **知识卡片检索** | `rag/pipeline/recall/UserKnowledgeCardSearcher.java` |
 | 公共知识检索 | `rag/pipeline/recall/PublicKnowledgeElasticsearchSearcher.java` |
 | **查询扩展** | `rag/pipeline/expand/RagQueryExpand.java` |
 | 扩展配置 | `rag/pipeline/expand/RagQueryExpandConfiguration.java` |

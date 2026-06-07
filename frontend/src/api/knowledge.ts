@@ -40,6 +40,40 @@ export interface MultipartPartInfo {
   etag: string
 }
 
+export interface ChunkGroupItem {
+  groupIndex: number
+  title: string
+  chunkCount: number
+}
+
+export interface ChunkGroupResult {
+  taskId: string
+  fileName: string
+  summary: string
+  totalChunks: number
+  groups: ChunkGroupItem[]
+}
+
+export interface ChunkItem {
+  chunkIndex: number
+  content: string
+  charCount: number
+  relatedCardCount: number
+}
+
+export interface ChunkListResult {
+  taskId: string
+  chunks: ChunkItem[]
+  total: number
+}
+
+export interface RelatedCard {
+  cardId: number
+  title: string
+  cardType: string
+  similarity: number
+}
+
 async function parseError(r: Response): Promise<string> {
   const data = await r.json().catch(() => ({}))
   return (data as { message?: string })?.message ?? `HTTP ${r.status}`
@@ -207,4 +241,32 @@ export async function deleteDocument(taskId: string): Promise<void> {
   if (!r.ok) {
     throw new Error(await parseError(r))
   }
+}
+
+export async function getChunkGroups(taskId: string): Promise<ChunkGroupResult> {
+  const r = await authFetch(`/api/knowledge/documents/${encodeURIComponent(taskId)}/chunks/groups`)
+  if (!r.ok) throw new Error(await parseError(r))
+  return (await r.json()) as ChunkGroupResult
+}
+
+export async function getDocumentChunks(
+  taskId: string,
+  params: { page?: number; size?: number; keyword?: string; groupIndex?: number | null } = {}
+): Promise<ChunkListResult> {
+  const q = new URLSearchParams()
+  q.set('page', String(params.page ?? 1))
+  q.set('size', String(params.size ?? 20))
+  if (params.keyword?.trim()) q.set('keyword', params.keyword.trim())
+  if (params.groupIndex != null) q.set('groupIndex', String(params.groupIndex))
+  const r = await authFetch(`/api/knowledge/documents/${encodeURIComponent(taskId)}/chunks?${q}`)
+  if (!r.ok) throw new Error(await parseError(r))
+  return (await r.json()) as ChunkListResult
+}
+
+export async function getChunkRelatedCards(taskId: string, chunkIndex: number): Promise<RelatedCard[]> {
+  const r = await authFetch(
+    `/api/knowledge/chunks/${encodeURIComponent(taskId)}/${encodeURIComponent(String(chunkIndex))}/related-cards`
+  )
+  if (!r.ok) throw new Error(await parseError(r))
+  return (await r.json()) as RelatedCard[]
 }

@@ -112,6 +112,7 @@ public final class RagRecall {
         private final RagQueryExpand.SubQueryExpander subQueryExpander;
         private final DocumentSearcher userMemorySearcher;
         private final DocumentSearcher userKnowledgeSearcher;
+        private final DocumentSearcher userKnowledgeCardSearcher;
         private final DocumentSearcher publicKnowledgeSearcher;
         private final ObjectProvider<ElasticsearchOperations> operationsProvider;
         private final ExecutorService recallExecutor;
@@ -125,6 +126,7 @@ public final class RagRecall {
                 RagQueryExpand.SubQueryExpander subQueryExpander,
                 DocumentSearcher userMemorySearcher,
                 DocumentSearcher userKnowledgeSearcher,
+                DocumentSearcher userKnowledgeCardSearcher,
                 DocumentSearcher publicKnowledgeSearcher,
                 ObjectProvider<ElasticsearchOperations> operationsProvider,
                 @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
@@ -136,6 +138,7 @@ public final class RagRecall {
             this.subQueryExpander = subQueryExpander;
             this.userMemorySearcher = userMemorySearcher;
             this.userKnowledgeSearcher = userKnowledgeSearcher;
+            this.userKnowledgeCardSearcher = userKnowledgeCardSearcher;
             this.publicKnowledgeSearcher = publicKnowledgeSearcher;
             this.operationsProvider = operationsProvider;
             this.recallExecutor = recallExecutor;
@@ -189,7 +192,7 @@ public final class RagRecall {
 
             long recallStart = System.currentTimeMillis();
             int perK = Math.max(1, ragProperties.getRecall().getPerSubquerySize());
-            // 每个子查询：用户对话记忆索引、用户文档知识索引、公有知识索引各跑一次文本召回（虚拟线程池并发）
+            // 每个子查询：用户对话记忆、用户文档知识、用户知识卡片、公有知识各跑一次文本召回（虚拟线程池并发）。
             List<CompletableFuture<List<RecallHit>>> textFutures = new ArrayList<>();
             for (String sq : subQueries) {
                 textFutures.add(CompletableFuture.supplyAsync(
@@ -199,6 +202,10 @@ public final class RagRecall {
                 textFutures.add(CompletableFuture.supplyAsync(
                         () -> runWithRagUserContext(ragUserSnapshot,
                                 () -> safeTextSearch(userKnowledgeSearcher, sessionId, sq, perK)),
+                        recallExecutor));
+                textFutures.add(CompletableFuture.supplyAsync(
+                        () -> runWithRagUserContext(ragUserSnapshot,
+                                () -> safeTextSearch(userKnowledgeCardSearcher, sessionId, sq, perK)),
                         recallExecutor));
                 textFutures.add(CompletableFuture.supplyAsync(
                         () -> safeTextSearch(publicKnowledgeSearcher, sessionId, sq, perK),
@@ -213,6 +220,10 @@ public final class RagRecall {
                     () -> runWithRagUserContext(ragUserSnapshot,
                             () -> safeVectorSearch(userKnowledgeSearcher, sessionId, vectorText, perK)),
                     recallExecutor);
+            CompletableFuture<List<RecallHit>> userKnowledgeCardVecFuture = CompletableFuture.supplyAsync(
+                    () -> runWithRagUserContext(ragUserSnapshot,
+                            () -> safeVectorSearch(userKnowledgeCardSearcher, sessionId, vectorText, perK)),
+                    recallExecutor);
             CompletableFuture<List<RecallHit>> publicVecFuture = CompletableFuture.supplyAsync(
                     () -> safeVectorSearch(publicKnowledgeSearcher, sessionId, vectorText, perK),
                     recallExecutor);
@@ -220,6 +231,7 @@ public final class RagRecall {
             CompletableFuture.allOf(
                     userVecFuture,
                     userKnowledgeVecFuture,
+                    userKnowledgeCardVecFuture,
                     publicVecFuture,
                     CompletableFuture.allOf(textFutures.toArray(CompletableFuture[]::new))
             ).join();
@@ -230,6 +242,7 @@ public final class RagRecall {
             }
             batches.add(userVecFuture.join());
             batches.add(userKnowledgeVecFuture.join());
+            batches.add(userKnowledgeCardVecFuture.join());
             batches.add(publicVecFuture.join());
 
             long recallLatencyMs = System.currentTimeMillis() - recallStart;
@@ -244,18 +257,20 @@ public final class RagRecall {
             if (log.isDebugEnabled()) {
                 int memTextSum = 0, memVec = userVecFuture.join().size();
                 int ukTextSum = 0, ukVec = userKnowledgeVecFuture.join().size();
+                int cardTextSum = 0, cardVec = userKnowledgeCardVecFuture.join().size();
                 int pubTextSum = 0, pubVec = publicVecFuture.join().size();
                 for (int i = 0; i < subQueries.size(); i++) {
-                    // per sub-query: [mem, uk, pub] × 3 text searchers
-                    int base = i * 3;
+                    // per sub-query: [mem, uk, card, pub] × 4 text searchers
+                    int base = i * 4;
                     memTextSum += batches.get(base).size();
                     ukTextSum += batches.get(base + 1).size();
-                    pubTextSum += batches.get(base + 2).size();
+                    cardTextSum += batches.get(base + 2).size();
+                    pubTextSum += batches.get(base + 3).size();
                 }
                 log.debug("[RagRecall] 召回明细 sid={} subCount={}: "
-                                + "记忆=[text:{} vec:{}] 用户知识=[text:{} vec:{}] 公共知识=[text:{} vec:{}]",
+                                + "记忆=[text:{} vec:{}] 用户知识=[text:{} vec:{}] 知识卡片=[text:{} vec:{}] 公共知识=[text:{} vec:{}]",
                         sessionId, subQueries.size(),
-                        memTextSum, memVec, ukTextSum, ukVec, pubTextSum, pubVec);
+                        memTextSum, memVec, ukTextSum, ukVec, cardTextSum, cardVec, pubTextSum, pubVec);
             }
 
             int maxFacts = Math.max(1, ragProperties.getRender().getMaxInjectedFacts());
@@ -277,8 +292,12 @@ public final class RagRecall {
             List<RecallHit> candidates = ragProperties.getFusion().isEnabled()
                     ? RagScoreFusion.fuseByRrf(batches, ragProperties.getFusion().getRrfK(), poolSize)
                     : mergeByMaxScore(batches, poolSize);
+            log.debug("[RagRecall] 融合 sid={}, strategy={}, batchesIn={}, rawHits={}, dedupedCandidates={}",
+                    sessionId, ragProperties.getFusion().isEnabled() ? "RRF" : "maxScore",
+                    batches.size(), recallTotalHits, candidates.size());
             if (candidates.isEmpty()) {
-                log.debug("[RagRecall] 无召回命中 sid={}", sessionId);
+                log.debug("[RagRecall] 无召回命中 sid={}, rawHits={}, fusionStrategy={}",
+                        sessionId, recallTotalHits, ragProperties.getFusion().isEnabled() ? "RRF" : "maxScore");
                 trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
                 qualityLogger.log(trace);
                 return Optional.empty();
@@ -293,7 +312,8 @@ public final class RagRecall {
             List<RecallHit> finalHits = reranker.rerank(textForExpandAndVector, candidates, topN);
             trace.setRerankLatencyMs(System.currentTimeMillis() - rerankStart);
             if (finalHits.isEmpty()) {
-                log.debug("[RagRecall] 精排后无命中 sid={}", sessionId);
+                log.debug("[RagRecall] 精排后无命中 sid={}, rerankInput={}, rerankTopN={}",
+                        sessionId, candidates.size(), topN);
                 trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
                 qualityLogger.log(trace);
                 return Optional.empty();
@@ -307,10 +327,16 @@ public final class RagRecall {
             trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
             qualityLogger.log(trace);
 
-            log.debug("[RagRecall] 注入 sid={}, candidatePool={}, finalHits={}, blockLen={}",
-                    sessionId, candidates.size(), finalHits.size(), block.length());
-            for(RecallHit hit : finalHits){
-                log.debug("[RagRecall] 精排命中 {}", hit.id());
+            log.debug("[RagRecall] 注入完成 sid={}, candidatePool={}, finalHits={}, blockLen={}, totalLatencyMs={}",
+                    sessionId, candidates.size(), finalHits.size(), block.length(),
+                    trace.getTotalLatencyMs());
+            for (int i = 0; i < finalHits.size(); i++) {
+                RecallHit hit = finalHits.get(i);
+                String preview = hit.content().length() > 80
+                        ? hit.content().substring(0, 80) + "…"
+                        : hit.content();
+                log.debug("[RagRecall]   #{} id={}, score={}, source={}, preview=[{}]",
+                        i + 1, hit.id(), String.format("%.4f", hit.score()), hit.source(), preview);
             }
             return Optional.of(block);
         }

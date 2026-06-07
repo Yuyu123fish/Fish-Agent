@@ -8,6 +8,7 @@ import {
   Close,
   Loading,
   Collection,
+  Tickets,
   SwitchButton
 } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
@@ -125,6 +126,12 @@ function goKnowledge() {
   void router.push('/knowledge')
 }
 
+function goCards() {
+  if (streaming.value) return
+  closeDrawer()
+  void router.push('/cards')
+}
+
 async function handleLogout() {
   if (streaming.value) return
   try {
@@ -161,6 +168,10 @@ async function handleLogout() {
             <button class="action-btn" :disabled="streaming" @click="goKnowledge">
               <el-icon><Collection /></el-icon>
               知识库
+            </button>
+            <button class="action-btn" :disabled="streaming" @click="goCards">
+              <el-icon><Tickets /></el-icon>
+              知识卡片
             </button>
           </div>
 

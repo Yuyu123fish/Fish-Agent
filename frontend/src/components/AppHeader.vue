@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
-import { Menu, Collection, SwitchButton, ArrowLeft, Moon, Sunny } from '@element-plus/icons-vue'
+import { Menu, Collection, SwitchButton, ArrowLeft, Moon, Sunny, Tickets } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/store/auth'
 import * as authApi from '@/api/auth'
 import { useDrawer } from '@/composables/useDrawer'
@@ -38,6 +38,10 @@ async function handleLogout() {
 function goKnowledge() {
   void router.push('/knowledge')
 }
+
+function goCards() {
+  void router.push('/cards')
+}
 </script>
 
 <template>
@@ -57,6 +61,9 @@ function goKnowledge() {
     <div class="right">
       <button class="icon-btn" title="知识库" @click="goKnowledge">
         <el-icon :size="16"><Collection /></el-icon>
+      </button>
+      <button class="icon-btn" title="知识卡片" @click="goCards">
+        <el-icon :size="16"><Tickets /></el-icon>
       </button>
       <button class="icon-btn theme-toggle" :title="dark ? '切换亮色' : '切换暗色'" @click="toggle">
         <el-icon :size="16">
