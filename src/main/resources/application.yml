@@ -113,6 +113,37 @@ logging:
       memory: debug
       rag: debug
 
+# ── Resilience4j 熔断器 ────────────────────────────────────────
+resilience4j:
+  circuitbreaker:
+    configs:
+      default:
+        failure-rate-threshold: 50
+        slow-call-rate-threshold: 80
+        sliding-window-type: COUNT_BASED
+        sliding-window-size: 10
+        minimum-number-of-calls: 5
+        wait-duration-in-open-state: 30s
+        permitted-number-of-calls-in-half-open-state: 3
+        automatic-transition-from-open-to-half-open-enabled: true
+    instances:
+      llm:
+        base-config: default
+        slow-call-duration-threshold: 15s
+        wait-duration-in-open-state: 60s
+      es-text:
+        base-config: default
+        slow-call-duration-threshold: 3s
+        wait-duration-in-open-state: 20s
+      es-vector:
+        base-config: default
+        slow-call-duration-threshold: 5s
+        wait-duration-in-open-state: 30s
+      rerank:
+        base-config: default
+        slow-call-duration-threshold: 5s
+        wait-duration-in-open-state: 30s
+
 # ═══════════════════════════════════════════════════════════════
 # Fish-Agent 业务配置
 # ═══════════════════════════════════════════════════════════════

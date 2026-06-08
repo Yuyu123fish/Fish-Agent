@@ -3,10 +3,12 @@ package com.yuyu.fishagent.chat;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.chat.dto.ChatRequest;
 import com.yuyu.fishagent.chat.dto.SessionInfo;
+import com.yuyu.fishagent.common.trace.TraceConstants;
 import com.yuyu.fishagent.common.exception.SessionLockedException;
 import com.yuyu.fishagent.chat.ChatService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
@@ -46,6 +48,11 @@ public class ChatController {
     public SseEmitter stream(@RequestBody ChatRequest req) {
         SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
         try {
+            String traceId = MDC.get(TraceConstants.TRACE_ID);
+            if (traceId != null && !traceId.isBlank()) {
+                // 首个 SSE 事件返回 traceId，前端可在报错上报时一并携带，方便后端按链路排查。
+                emitter.send(SseEmitter.event().name(TraceConstants.SSE_EVENT_TRACE).data(traceId));
+            }
             chatService.streamChat(req.getSessionId(), req.getMessage(), emitter);
         } catch (SessionLockedException e) {
             // 须交由 GlobalExceptionHandler 转为 HTTP 409，勿走 SseEmitter.completeWithError

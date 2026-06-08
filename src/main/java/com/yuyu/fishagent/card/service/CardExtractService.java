@@ -20,11 +20,14 @@ import com.yuyu.fishagent.card.mapper.CardKeywordMapper;
 import com.yuyu.fishagent.card.mapper.KnowledgeCardMapper;
 import com.yuyu.fishagent.chat.ChatMetadataService;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
+import com.yuyu.fishagent.common.cache.CacheConstants;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -62,6 +65,11 @@ public class CardExtractService {
     @Qualifier("memoryChatModel")
     private final ChatModel chatModel;
 
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public ExtractResult extractFromSession(String sessionId, Long userId) {
         if (userId == null) {

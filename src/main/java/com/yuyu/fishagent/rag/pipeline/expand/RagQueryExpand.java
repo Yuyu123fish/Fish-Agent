@@ -2,6 +2,7 @@ package com.yuyu.fishagent.rag.pipeline.expand;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -135,7 +136,7 @@ public final class RagQueryExpand {
             RagProperties.Expand cfg = ragProperties.getExpand();
             int maxQueries = Math.min(Math.max(1, cfg.getMaxQueries()), Math.max(1, ragProperties.getRecall().getMaxSubQueries()));
             try {
-                CompletableFuture<String> future = CompletableFuture.supplyAsync(() -> {
+                CompletableFuture<String> future = MdcAsync.mdcSupplyAsync(() -> {
                     Prompt prompt = new Prompt(
                             new SystemMessage(RagQueryDecomposePrompt.SYSTEM_INSTRUCTION),
                             new UserMessage(RagQueryDecomposePrompt.userSegment(original)));

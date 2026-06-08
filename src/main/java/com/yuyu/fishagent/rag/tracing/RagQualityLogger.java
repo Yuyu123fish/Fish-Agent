@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.rag.tracing;
 
+import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
@@ -12,7 +13,6 @@ import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -60,7 +60,7 @@ public class RagQualityLogger {
             return;
         }
         if (cfg.isAsync()) {
-            CompletableFuture.runAsync(() -> doSave(cfg.getIndexName(), trace));
+            MdcAsync.mdcRunAsync(() -> doSave(cfg.getIndexName(), trace));
         } else {
             doSave(cfg.getIndexName(), trace);
         }

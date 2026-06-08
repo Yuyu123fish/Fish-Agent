@@ -6,6 +6,9 @@ import com.yuyu.fishagent.rag.pipeline.fusion.RagScoreFusion;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
 import com.yuyu.fishagent.rag.tracing.RagQualityLogger;
@@ -119,6 +122,7 @@ public final class RagRecall {
         private final RagReranker reranker;
         private final RagHydeService hydeService;
         private final RagQualityLogger qualityLogger;
+        private final CircuitBreakerHelper circuitBreakerHelper;
 
         public DefaultAugmentation(
                 RagProperties ragProperties,
@@ -132,7 +136,8 @@ public final class RagRecall {
                 @Qualifier("ragRecallExecutor") ExecutorService recallExecutor,
                 RagReranker reranker,
                 RagHydeService hydeService,
-                RagQualityLogger qualityLogger) {
+                RagQualityLogger qualityLogger,
+                CircuitBreakerHelper circuitBreakerHelper) {
             this.ragProperties = ragProperties;
             this.queryRewriter = queryRewriter;
             this.subQueryExpander = subQueryExpander;
@@ -145,6 +150,7 @@ public final class RagRecall {
             this.reranker = reranker;
             this.hydeService = hydeService;
             this.qualityLogger = qualityLogger;
+            this.circuitBreakerHelper = circuitBreakerHelper;
         }
 
         @Override
@@ -195,36 +201,36 @@ public final class RagRecall {
             // 每个子查询：用户对话记忆、用户文档知识、用户知识卡片、公有知识各跑一次文本召回（虚拟线程池并发）。
             List<CompletableFuture<List<RecallHit>>> textFutures = new ArrayList<>();
             for (String sq : subQueries) {
-                textFutures.add(CompletableFuture.supplyAsync(
+                textFutures.add(MdcAsync.mdcSupplyAsync(
                         () -> runWithRagUserContext(ragUserSnapshot,
                                 () -> safeTextSearch(userMemorySearcher, sessionId, sq, perK)),
                         recallExecutor));
-                textFutures.add(CompletableFuture.supplyAsync(
+                textFutures.add(MdcAsync.mdcSupplyAsync(
                         () -> runWithRagUserContext(ragUserSnapshot,
                                 () -> safeTextSearch(userKnowledgeSearcher, sessionId, sq, perK)),
                         recallExecutor));
-                textFutures.add(CompletableFuture.supplyAsync(
+                textFutures.add(MdcAsync.mdcSupplyAsync(
                         () -> runWithRagUserContext(ragUserSnapshot,
                                 () -> safeTextSearch(userKnowledgeCardSearcher, sessionId, sq, perK)),
                         recallExecutor));
-                textFutures.add(CompletableFuture.supplyAsync(
+                textFutures.add(MdcAsync.mdcSupplyAsync(
                         () -> safeTextSearch(publicKnowledgeSearcher, sessionId, sq, perK),
                         recallExecutor));
             }
 
-            CompletableFuture<List<RecallHit>> userVecFuture = CompletableFuture.supplyAsync(
+            CompletableFuture<List<RecallHit>> userVecFuture = MdcAsync.mdcSupplyAsync(
                     () -> runWithRagUserContext(ragUserSnapshot,
                             () -> safeVectorSearch(userMemorySearcher, sessionId, vectorText, perK)),
                     recallExecutor);
-            CompletableFuture<List<RecallHit>> userKnowledgeVecFuture = CompletableFuture.supplyAsync(
+            CompletableFuture<List<RecallHit>> userKnowledgeVecFuture = MdcAsync.mdcSupplyAsync(
                     () -> runWithRagUserContext(ragUserSnapshot,
                             () -> safeVectorSearch(userKnowledgeSearcher, sessionId, vectorText, perK)),
                     recallExecutor);
-            CompletableFuture<List<RecallHit>> userKnowledgeCardVecFuture = CompletableFuture.supplyAsync(
+            CompletableFuture<List<RecallHit>> userKnowledgeCardVecFuture = MdcAsync.mdcSupplyAsync(
                     () -> runWithRagUserContext(ragUserSnapshot,
                             () -> safeVectorSearch(userKnowledgeCardSearcher, sessionId, vectorText, perK)),
                     recallExecutor);
-            CompletableFuture<List<RecallHit>> publicVecFuture = CompletableFuture.supplyAsync(
+            CompletableFuture<List<RecallHit>> publicVecFuture = MdcAsync.mdcSupplyAsync(
                     () -> safeVectorSearch(publicKnowledgeSearcher, sessionId, vectorText, perK),
                     recallExecutor);
 
@@ -343,7 +349,11 @@ public final class RagRecall {
 
         private List<RecallHit> safeTextSearch(DocumentSearcher searcher, String sessionId, String sq, int perK) {
             try {
-                return searcher.searchByText(sessionId, sq, perK);
+                // 文本召回统一共享 es-text 熔断器；打开时直接返回空列表，让 RAG 自动降级。
+                return circuitBreakerHelper.executeWithCircuitBreaker(
+                        ResilienceConstants.CB_ES_TEXT,
+                        () -> searcher.searchByText(sessionId, sq, perK),
+                        List.of());
             } catch (Exception e) {
                 log.warn("[RagRecall] 子查询文本召回失败 sqLen={}: {}", sq.length(), e.getMessage());
                 return List.of();
@@ -352,7 +362,11 @@ public final class RagRecall {
 
         private List<RecallHit> safeVectorSearch(DocumentSearcher searcher, String sessionId, String rewritten, int perK) {
             try {
-                return searcher.searchByVector(sessionId, rewritten, perK);
+                // 向量召回包含 Embedding + kNN 查询，统一共享 es-vector 熔断器。
+                return circuitBreakerHelper.executeWithCircuitBreaker(
+                        ResilienceConstants.CB_ES_VECTOR,
+                        () -> searcher.searchByVector(sessionId, rewritten, perK),
+                        List.of());
             } catch (Exception e) {
                 log.warn("[RagRecall] 向量召回失败: {}", e.getMessage());
                 return List.of();

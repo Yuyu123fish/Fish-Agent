@@ -2,6 +2,9 @@ package com.yuyu.fishagent.rag.pipeline.rerank;
 
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.Test;
 import org.springframework.web.client.RestClient;
 
@@ -85,6 +88,25 @@ class RagRerankerTest {
         properties.getRerank().setFallbackOnError(true);
 
         RagReranker reranker = new DashScopeRagReranker(properties, RestClient.builder().baseUrl("http://127.0.0.1:1").build());
+
+        assertThat(reranker.rerank("query", candidates(), 2))
+                .extracting(RagRecall.RecallHit::id)
+                .containsExactly("A", "B");
+    }
+
+    @Test
+    void rerankFallsBackImmediatelyWhenCircuitBreakerIsOpen() {
+        RagProperties properties = new RagProperties();
+        properties.getRerank().setEnabled(true);
+        properties.getRerank().setApiKey("test-key");
+        CircuitBreakerRegistry registry = CircuitBreakerRegistry.ofDefaults();
+        registry.circuitBreaker(ResilienceConstants.CB_RERANK).transitionToOpenState();
+        CircuitBreakerHelper helper = new CircuitBreakerHelper(registry);
+
+        RagReranker reranker = new DashScopeRagReranker(
+                properties,
+                RestClient.builder().baseUrl("http://192.0.2.1").build(),
+                helper);
 
         assertThat(reranker.rerank("query", candidates(), 2))
                 .extracting(RagRecall.RecallHit::id)

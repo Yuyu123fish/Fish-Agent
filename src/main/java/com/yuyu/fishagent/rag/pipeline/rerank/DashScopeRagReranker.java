@@ -1,5 +1,7 @@
 package com.yuyu.fishagent.rag.pipeline.rerank;
 
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import lombok.extern.slf4j.Slf4j;
@@ -23,14 +25,20 @@ public class DashScopeRagReranker implements RagReranker {
 
     private final RagProperties ragProperties;
     private final RestClient restClient;
+    private final CircuitBreakerHelper circuitBreakerHelper;
 
-    public DashScopeRagReranker(RagProperties ragProperties) {
-        this(ragProperties, buildClient(ragProperties.getRerank()));
+    public DashScopeRagReranker(RagProperties ragProperties, CircuitBreakerHelper circuitBreakerHelper) {
+        this(ragProperties, buildClient(ragProperties.getRerank()), circuitBreakerHelper);
     }
 
     DashScopeRagReranker(RagProperties ragProperties, RestClient restClient) {
+        this(ragProperties, restClient, null);
+    }
+
+    DashScopeRagReranker(RagProperties ragProperties, RestClient restClient, CircuitBreakerHelper circuitBreakerHelper) {
         this.ragProperties = ragProperties;
         this.restClient = restClient;
+        this.circuitBreakerHelper = circuitBreakerHelper;
     }
 
     @Override
@@ -54,23 +62,7 @@ public class DashScopeRagReranker implements RagReranker {
         }
 
         try {
-            List<String> documents = candidates.stream()
-                    .map(RagRecall.RecallHit::content)
-                    .toList();
-
-            @SuppressWarnings("unchecked")
-            Map<String, Object> response = restClient.post()
-                    .uri(RERANK_PATH)
-                    .body(Map.of(
-                            "model", cfg.getModel(),
-                            "input", Map.of(
-                                    "query", query,
-                                    "documents", documents),
-                            "parameters", Map.of(
-                                    "top_n", limit,
-                                    "return_documents", false)))
-                    .retrieve()
-                    .body(Map.class);
+            Map<String, Object> response = executeRerankRequest(query, candidates, limit, fallback);
 
             List<Map<String, Object>> results = extractResults(response);
             if (results.isEmpty()) {
@@ -98,6 +90,37 @@ public class DashScopeRagReranker implements RagReranker {
             }
             throw e;
         }
+    }
+
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> executeRerankRequest(String query,
+                                                     List<RagRecall.RecallHit> candidates,
+                                                     int limit,
+                                                     List<RagRecall.RecallHit> fallback) {
+        List<String> documents = candidates.stream()
+                .map(RagRecall.RecallHit::content)
+                .toList();
+        java.util.function.Supplier<Map<String, Object>> action = () -> restClient.post()
+                .uri(RERANK_PATH)
+                .body(Map.of(
+                        "model", ragProperties.getRerank().getModel(),
+                        "input", Map.of(
+                                "query", query,
+                                "documents", documents),
+                        "parameters", Map.of(
+                                "top_n", limit,
+                                "return_documents", false)))
+                .retrieve()
+                .body(Map.class);
+
+        if (circuitBreakerHelper == null) {
+            return action.get();
+        }
+        // 熔断打开时返回一个空响应，后续 extractResults 为空会自然降级为 fallback。
+        return circuitBreakerHelper.executeWithCircuitBreaker(
+                ResilienceConstants.CB_RERANK,
+                action,
+                Map.of("output", Map.of("results", List.of())));
     }
 
     private static RestClient buildClient(RagProperties.Rerank cfg) {

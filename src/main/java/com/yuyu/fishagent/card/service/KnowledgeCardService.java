@@ -14,9 +14,13 @@ import com.yuyu.fishagent.card.entity.CardRelation;
 import com.yuyu.fishagent.card.entity.KnowledgeCard;
 import com.yuyu.fishagent.card.mapper.CardRelationMapper;
 import com.yuyu.fishagent.card.mapper.KnowledgeCardMapper;
+import com.yuyu.fishagent.common.cache.CacheConstants;
 import com.yuyu.fishagent.rag.service.ChunkClusterService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.cache.annotation.CacheEvict;
+import org.springframework.cache.annotation.Cacheable;
+import org.springframework.cache.annotation.Caching;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -57,6 +61,11 @@ public class KnowledgeCardService {
     /**
      * 手动创建卡片：阶段 1 直接进入 confirmed，保证创建后即可在页面和 ES 中检索。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public Long create(CardCreateRequest req) {
         Long userId = requireUserId();
@@ -94,6 +103,7 @@ public class KnowledgeCardService {
     /**
      * 查询详情：如果卡片不存在或不属于当前用户，按计划返回 403。
      */
+    @Cacheable(cacheNames = CacheConstants.CARD_DETAIL, key = CacheConstants.KEY_CURRENT_USER_CARD_ID)
     public CardVO detail(Long id) {
         Long userId = requireUserId();
         KnowledgeCard card = findOwnedCardOrForbidden(userId, id);
@@ -104,6 +114,11 @@ public class KnowledgeCardService {
     /**
      * 编辑用户可控字段；confirmed 卡片编辑后同步更新 ES。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public void update(Long id, CardUpdateRequest req) {
         Long userId = requireUserId();
@@ -122,6 +137,11 @@ public class KnowledgeCardService {
      *
      * <p>操作顺序遵循一致的锁获取路径（子表 → 关联表 → 主表），避免与其他事务死锁。</p>
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public void delete(Long id) {
         Long userId = requireUserId();
@@ -143,6 +163,11 @@ public class KnowledgeCardService {
     /**
      * 批量确认 pending 卡片：状态入库后逐张写 ES，ES 失败不回滚 MySQL 状态。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public void batchConfirm(List<Long> ids) {
         Long userId = requireUserId();
@@ -157,6 +182,11 @@ public class KnowledgeCardService {
     /**
      * 批量拒绝卡片：拒绝态不参与检索，确认过的卡片也会从 ES 移除。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public void batchReject(List<Long> ids) {
         Long userId = requireUserId();
@@ -171,6 +201,11 @@ public class KnowledgeCardService {
     /**
      * 合并疑似重复卡片：保留 keep 的标题正文，迁移 discard 的关键词和所有关联后删除 discard。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public void merge(Long keepId, Long discardId) {
         Long userId = requireUserId();
@@ -213,6 +248,11 @@ public class KnowledgeCardService {
     /**
      * 手动新增关联：两端卡片都必须属于当前用户。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public Long addRelation(Long fromCardId, Long toCardId, String relationType) {
         Long userId = requireUserId();
@@ -241,6 +281,11 @@ public class KnowledgeCardService {
     /**
      * 删除关联前通过关联两端卡片做归属校验，避免越权删除他人的边。
      */
+    @Caching(evict = {
+            @CacheEvict(cacheNames = CacheConstants.CARD_DETAIL, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_STATS, allEntries = true),
+            @CacheEvict(cacheNames = CacheConstants.CARD_RELATIONS, allEntries = true)
+    })
     @Transactional
     public void deleteRelation(Long relationId) {
         Long userId = requireUserId();
@@ -262,6 +307,7 @@ public class KnowledgeCardService {
     /**
      * 当前用户全部关联边，供图谱视图一次性组装边集合，避免前端逐卡 N+1 请求。
      */
+    @Cacheable(cacheNames = CacheConstants.CARD_RELATIONS, key = CacheConstants.KEY_CURRENT_USER)
     public List<ExtractRelationVO> allRelations() {
         Long userId = requireUserId();
         return cardRelationMapper.selectAllRelationsForUser(userId);
@@ -270,6 +316,7 @@ public class KnowledgeCardService {
     /**
      * 当前用户的卡片统计，供顶部概览和分组 Tab 复用。
      */
+    @Cacheable(cacheNames = CacheConstants.CARD_STATS, key = CacheConstants.KEY_CURRENT_USER)
     public CardStatsVO stats() {
         Long userId = requireUserId();
         long total = knowledgeCardMapper.selectCount(Wrappers.<KnowledgeCard>lambdaQuery()

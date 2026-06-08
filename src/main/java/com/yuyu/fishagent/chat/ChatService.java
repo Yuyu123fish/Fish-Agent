@@ -5,6 +5,7 @@ import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.yuyu.fishagent.agent.ChatAgent;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
+import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
@@ -20,6 +21,7 @@ import com.yuyu.fishagent.chat.dto.SessionInfo;
 import com.yuyu.fishagent.common.exception.SessionLockedException;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.slf4j.MDC;
 import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -34,10 +36,10 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -149,6 +151,8 @@ public class ChatService {
         // ReAct 完成回调可能在非 Servlet 线程执行，ThreadLocal 不会自动传递，此处快照用户上下文供 persist 使用。
         final UserContext streamUserSnapshot = UserContextHolder.get();
         final Long streamUserId = streamUserSnapshot == null ? null : streamUserSnapshot.userId();
+        // SSE 返回后 Filter 会清理 Servlet 线程 MDC，流式完成回调需显式复用入口处的 MDC 快照。
+        final Map<String, String> streamMdcSnapshot = MDC.getCopyOfContextMap();
 
         // 须先于会话锁检查创建：拦截器已对 SSE 并发 INCR，若抢锁失败须在此 Runnable 中 DECR，否则槽位泄漏。
         AtomicBoolean sseSlotReleased = new AtomicBoolean(false);
@@ -193,16 +197,28 @@ public class ChatService {
         // 2. 注册 emitter 生命周期回调（必须在 subscribe 之前：若 onComplete 异步触发并调用
         //    emitter.complete() 时回调尚未注册，releaseSseSlotOnce 将永远不被执行，导致会话锁泄漏）。
         final Disposable[] disposableRef = new Disposable[1];
+        // SSE 生命周期回调运行在非 Servlet 线程，需从入口快照恢复 MDC 以保证日志携带 traceId。
         emitter.onTimeout(() -> {
-            log.warn("[ChatService] SSE 超时, sid={}", sid);
+            if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+            try {
+                log.warn("[ChatService] SSE 超时, sid={}", sid);
+            } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
         });
         emitter.onCompletion(() -> {
+            if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+            try {
+                log.debug("[ChatService] SSE 完成, sid={}", sid);
+            } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
         });
         emitter.onError(e -> {
+            if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+            try {
+                log.warn("[ChatService] SSE 连接异常, sid={}", sid);
+            } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
         });
@@ -213,7 +229,11 @@ public class ChatService {
         disposableRef[0] = chatAgent.stream(buildResult.messages(), sid).subscribe(
                 node -> handleNode(node, emitter, assistantBuf),
                 err -> {
-                    log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
+                    // Reactor 回调线程无 MDC，从入口快照恢复以使日志携带 traceId。
+                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+                    try {
+                        log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
+                    } finally { MDC.clear(); }
                     safeError(emitter, err);
                 },
                 () -> {
@@ -221,6 +241,8 @@ public class ChatService {
                     if (streamUserSnapshot != null) {
                         UserContextHolder.set(streamUserSnapshot);
                     }
+                    // Reactor 回调线程无 MDC，从入口快照恢复，使 persist / safeSend 日志携带 traceId。
+                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
                     try {
                         ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
                         ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
@@ -233,11 +255,12 @@ public class ChatService {
                         }
                         safeSend(emitter, "done", full);
                         emitter.complete();
-                        triggerLongTermMemoryIngestion(streamUserId, sid, userInput);
+                        triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
                         triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
-                                buildResult.skipMaintenanceCompression());
+                                buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
                     } finally {
                         UserContextHolder.clear();
+                        MDC.clear();
                     }
                 }
         );
@@ -354,8 +377,9 @@ public class ChatService {
      * @param sid          会话 ID
      */
     private void triggerShortTermMaintenance(UserContext userSnapshot, Long userId, String sid,
-                                             boolean skipCompressionThisTurn) {
-        CompletableFuture.runAsync(() -> {
+                                             boolean skipCompressionThisTurn,
+                                             Map<String, String> mdcSnapshot) {
+        MdcAsync.mdcRunAsync(() -> {
             if (userSnapshot != null) {
                 UserContextHolder.set(userSnapshot);
             }
@@ -381,7 +405,7 @@ public class ChatService {
             } finally {
                 UserContextHolder.clear();
             }
-        });
+        }, mdcSnapshot);
     }
 
     /**
@@ -395,11 +419,12 @@ public class ChatService {
      * @param sid       会话 ID
      * @param userInput 用户当前输入
      */
-    private void triggerLongTermMemoryIngestion(Long userId, String sid, String userInput) {
+    private void triggerLongTermMemoryIngestion(Long userId, String sid, String userInput,
+                                                Map<String, String> mdcSnapshot) {
         log.debug("[ChatService] 触发异步长期记忆主动录入 uid={}, sid={}, inputLen={}",
                 userId, sid, userInput == null ? 0 : userInput.length());
         // 捕获 userId：异步线程中 ThreadLocal 不可用
-        CompletableFuture.runAsync(() -> longTermMemoryIngestionService.ingestFromUserInput(userId, sid, userInput));
+        MdcAsync.mdcRunAsync(() -> longTermMemoryIngestionService.ingestFromUserInput(userId, sid, userInput), mdcSnapshot);
     }
 
     /**

@@ -1,10 +1,16 @@
 package com.yuyu.fishagent.agent;
 
 import com.alibaba.cloud.ai.graph.NodeOutput;
+import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.alibaba.cloud.ai.graph.RunnableConfig;
 import com.alibaba.cloud.ai.graph.agent.ReactAgent;
 import com.yuyu.fishagent.agent.tool.ToolRegistry;
 import com.yuyu.fishagent.agent.config.AgentProperties;
+import com.yuyu.fishagent.common.resilience.ResilienceConstants;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.reactor.circuitbreaker.operator.CircuitBreakerOperator;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.Message;
@@ -28,12 +34,18 @@ public class ChatAgent extends BaseAgent {
 
     private final AgentProperties properties;
 
+    private final CircuitBreaker llmCircuitBreaker;
+
     private ReactAgent reactAgent;
 
-    public ChatAgent(ChatModel chatModel, ToolRegistry toolRegistry, AgentProperties properties) {
+    public ChatAgent(ChatModel chatModel,
+                     ToolRegistry toolRegistry,
+                     AgentProperties properties,
+                     CircuitBreakerRegistry circuitBreakerRegistry) {
         super("fish-assistant", chatModel, properties.getMaxIterations());
         this.toolRegistry = toolRegistry;
         this.properties = properties;
+        this.llmCircuitBreaker = circuitBreakerRegistry.circuitBreaker(ResilienceConstants.CB_LLM);
     }
 
     @PostConstruct
@@ -58,6 +70,12 @@ public class ChatAgent extends BaseAgent {
                     .threadId(threadId)
                     .build();
             return reactAgent.stream(messages, config)
+                    // 保护完整 Flux 生命周期：上游流式错误、慢调用和熔断打开都能被记录。
+                    .transformDeferred(CircuitBreakerOperator.of(llmCircuitBreaker))
+                    .onErrorResume(CallNotPermittedException.class, e -> {
+                        log.warn("[ChatAgent] LLM 熔断器打开，返回降级提示");
+                        return fallbackStream();
+                    })
                     .doOnComplete(() -> transitionTo(AgentStatus.FINISHED))
                     .doOnError(e -> {
                         log.warn("[ChatAgent] stream 异常: {}", e.getMessage());
@@ -68,5 +86,12 @@ public class ChatAgent extends BaseAgent {
             transitionTo(AgentStatus.ERROR);
             return Flux.error(e);
         }
+    }
+
+    private Flux<NodeOutput> fallbackStream() {
+        return Flux.just(new StreamingOutput<>(
+                ResilienceConstants.LLM_FALLBACK_MESSAGE,
+                "llm-fallback",
+                null));
     }
 }

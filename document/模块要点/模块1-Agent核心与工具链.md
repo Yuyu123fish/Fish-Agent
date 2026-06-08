@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。
+基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]，DashScope 持续故障时返回固定降级提示。**
 
 ---
 
@@ -16,6 +16,7 @@ flowchart TB
 
     subgraph Agent["Agent 核心"]
         CA["ChatAgent.stream()"]
+        CB["CircuitBreakerOperator<br/>LLM 熔断保护 [v5.0]<br/>OPEN → fallbackStream()"]
         BA["BaseAgent.buildReactAgent()"]
         Status["AgentStatus 状态机<br/>IDLE → RUNNING → FINISHED / ERROR / MAX_ITER_REACHED"]
     end
@@ -39,7 +40,7 @@ flowchart TB
         External["外部：Tavily / Bocha<br/>高德天气 / 高德地理 / Mail"]
     end
 
-    CS --> CA --> BA
+    CS --> CA --> CB --> BA
     BA --> ReAct
     ReAct --> AntiLoop
     BA --> ToolSys
@@ -56,24 +57,34 @@ sequenceDiagram
     participant User as 用户
     participant CS as ChatService
     participant Agent as ChatAgent
+    participant CB as CircuitBreakerOperator [v5.0]
     participant LLM as ChatModel (DeepSeek)
     participant Tool as ToolCallback
     participant Hook as ModelCallLimitHook
 
     User->>CS: POST /api/chat/stream
     CS->>Agent: stream(messages, threadId)
-    Agent->>LLM: 第 1 次调用（含 tools 定义）
-    LLM-->>Agent: 需要调用 web_search_tavily
-    Agent->>Tool: 执行 web_search_tavily
-    Tool-->>Agent: 搜索结果 JSON
-    Agent->>LLM: 第 2 次调用（含工具返回值）
-    LLM-->>Agent: 需要调用 web_fetch
-    Agent->>Tool: 执行 web_fetch
-    Tool-->>Agent: 网页正文
-    Agent->>LLM: 第 N 次调用
-    Hook->>Agent: 触达 runLimit → 追加 END 指令
-    LLM-->>Agent: 最终文本回复
-    Agent-->>CS: done chunk → emitter.complete()
+    Agent->>CB: transformDeferred(CircuitBreakerOperator) 🔺
+
+    alt 熔断 CLOSED（正常）
+        CB->>LLM: 第 1 次调用（含 tools 定义）
+        LLM-->>Agent: 需要调用 web_search_tavily
+        Agent->>Tool: 执行 web_search_tavily
+        Tool-->>Agent: 搜索结果 JSON
+        Agent->>LLM: 第 2 次调用（含工具返回值）
+        LLM-->>Agent: 需要调用 web_fetch
+        Agent->>Tool: 执行 web_fetch
+        Tool-->>Agent: 网页正文
+        Agent->>LLM: 第 N 次调用
+        Hook->>Agent: 触达 runLimit → 追加 END 指令
+        LLM-->>Agent: 最终文本回复
+        Agent-->>CS: done chunk → emitter.complete()
+    else 熔断 OPEN [v5.0]
+        CB-->>Agent: CallNotPermittedException
+        Agent->>Agent: onErrorResume → fallbackStream()
+        Agent-->>CS: "服务暂时繁忙，请稍后重试" → emitter.complete()
+    end
+
     CS-->>User: SSE done 事件
 ```
 
@@ -114,19 +125,44 @@ protected ReactAgent buildReactAgent(List<ToolCallback> tools, String systemProm
 
 启动期遍历所有 `AgentToolProvider` Bean，逐个调用 `build()` 构造 `ToolCallback`。单个工具构造失败 **不阻断**其他工具注册——catch 后 continue。同时为每个 `ToolCallback` 包一层 DEBUG 日志代理，运行时每次工具调用自动打印工具名与输入摘要。
 
-### 3. ChatAgent.stream() — 流式入口
+### 3. ChatAgent.stream() — 流式入口 + LLM 熔断保护 [v5.0]
 
-`[ChatAgent.java](../../src/main/java/com/yuyu/fishagent/agent/ChatAgent.java)` 第 54-71 行：
+`[ChatAgent.java](../../src/main/java/com/yuyu/fishagent/agent/ChatAgent.java)`：
 
 ```java
 public Flux<NodeOutput> stream(List<Message> messages, String threadId) {
-    transitionTo(AgentStatus.RUNNING);
-    return reactAgent.stream(messages, config)
-        .doOnComplete(() -> transitionTo(AgentStatus.FINISHED))
-        .doOnError(e -> { transitionTo(AgentStatus.ERROR); })
-        .doOnCancel(() -> transitionTo(AgentStatus.IDLE));
+    try {
+        transitionTo(AgentStatus.RUNNING);
+        RunnableConfig config = RunnableConfig.builder()
+                .threadId(threadId).build();
+        return reactAgent.stream(messages, config)
+                // 保护完整 Flux 生命周期：上游流式错误、慢调用和熔断打开都能被记录。
+                .transformDeferred(CircuitBreakerOperator.of(llmCircuitBreaker))  // [v5.0]
+                .onErrorResume(CallNotPermittedException.class, e -> {            // [v5.0] CB OPEN → 降级
+                    log.warn("[ChatAgent] LLM 熔断器打开，返回降级提示");
+                    return fallbackStream();
+                })
+                .doOnComplete(() -> transitionTo(AgentStatus.FINISHED))
+                .doOnError(e -> {
+                    log.warn("[ChatAgent] stream 异常: {}", e.getMessage());
+                    transitionTo(AgentStatus.ERROR);
+                })
+                .doOnCancel(() -> transitionTo(AgentStatus.IDLE));
+    } catch (Exception e) {
+        transitionTo(AgentStatus.ERROR);
+        return Flux.error(e);
+    }
+}
+
+private Flux<NodeOutput> fallbackStream() {
+    return Flux.just(new StreamingOutput<>("服务暂时繁忙，请稍后重试", "llm-fallback", null));
 }
 ```
+
+**v5.0 关键设计**：
+- **`transformDeferred` 而非 `transform`**：`transform` 在构建时应用 operator（此时 CB 状态可能还是 CLOSED），`transformDeferred` 在**订阅时**才应用——每次订阅重新检查 CB 状态，保证 OPEN 时立即拦截
+- **`onErrorResume(CallNotPermittedException.class, ...)`**：只捕获熔断拒绝异常走降级，其他异常（网络错误、LLM 格式错误）正常传播到 ChatService 的 `subscribe.onError` 回调
+- **`fallbackStream()` 返回单元素 Flux**：用户看到的是一条明确的降级提示，而非错误中断。AgentStatus 仍正常转到 FINISHED
 
 返回 `Flux<NodeOutput>`，上层（ChatService）按需过滤 `StreamingOutput` chunk 推 SSE。
 
@@ -295,7 +331,9 @@ ReAct = Reasoning + Acting。模型在"思考→行动→观察→思考"的循�
 - `emitter.onTimeout`：SSE 长时间无数据写入时触发 → 释放资源 + `disposable.dispose()` 中断 ReAct 循环。
 - `emitter.onError`：客户端断连时触发 → 同样释放资源，避免服务端泄漏。
 
-当前**没有 fallback 策略**（如 DeepSeek 挂了自动切 DashScope），因为三家的 API Key 和模型能力不同（DeepSeek 支持 tool calling 但 DashScope 的工具协议有差异），热切换可能导致更差的体验。设计选择是"快速失败 + 明确提示"而非"静默降级"。未来可考虑在 `FishChatModelConfiguration` 中引入 `FallbackChatModel` 包装。
+**v5.0 熔断保护 [v5.0]**：`ChatAgent.stream()` 通过 `CircuitBreakerOperator.of(llmCircuitBreaker)` 保护整个 Flux 生命周期。当 DashScope API 出现持续性故障（50% 失败率或 80% 慢调用率），`llm` 熔断器从 CLOSED → OPEN，后续请求直接触发 `CallNotPermittedException` → `fallbackStream()` 返回固定降级提示"服务暂时繁忙"。60s 后进入 HALF-OPEN 状态放行 3 个探测请求，成功则恢复 CLOSED。**关键：LLM 流式响应刻意不加重试**——重试导致重复 token 或连接异常，熔断器用"快速失败 + 自动恢复"替代重试。
+
+当前**没有跨模型 fallback 策略**（如 DeepSeek 挂了自动切 DashScope），因为三家的 API Key 和模型能力不同（DeepSeek 支持 tool calling 但 DashScope 的工具协议有差异），热切换可能导致更差的体验。设计选择是"快速失败 + 明确提示 + 自动恢复"而非"静默降级到另一个模型"。
 
 **Q：Agent 的 system prompt 是怎么设计的？为什么不让模型暴露 RAG / 记忆等技术细节？**
 
@@ -339,6 +377,8 @@ Tool description 是 LLM 决定调用哪个工具的唯一依据，项目遵循�
 
 Agent 本身是无状态的——`ChatAgent` 不持有任何跨请求的会话状态（消息历史在 Redis，长期事实在 ES）。多实例部署时，同一用户的两次请求可能落到不同实例上，完全不影响。唯一的注意点是 `AgentStatus` 状态机在内存中——如果实例 A 正在处理 session-123，实例 B 收到同一 session 的请求时不会知道 A 的状态。但这已被**会话互斥锁**（Redis `SET NX`）覆盖——B 在 Service 层获取不到锁直接返回 409，根本不会进入 Agent。
 
+**注意 [v5.0]**：`CircuitBreaker` 状态也是内存中的——实例 A 的 `llm` 熔断器 OPEN 了，实例 B 的可能还是 CLOSED。但 `resilience4j-spring-boot3` 的 Registry 是实例级单例，YAML 配置中每个实例的阈值相同。如果需要跨实例共享熔断状态，可引入 `resilience4j-circuitbreaker` 的分布式事件发布（如通过 Redis pub/sub），当前单实例部署不需要。
+
 ---
 
 ## 关联代码路径速查
@@ -352,3 +392,5 @@ Agent 本身是无状态的——`ChatAgent` 不持有任何跨请求的会话�
 | 工具注册中心 | `agent/tool/ToolRegistry.java` |
 | 内置工具 | `agent/tool/builtin/*.java` |
 | 外部工具 | `agent/tool/external/*.java` |
+| **LLM 熔断器常量 [v5.0]** | `common/resilience/ResilienceConstants.java` |
+| **熔断事件日志 [v5.0]** | `common/resilience/ResilienceConfig.java` |

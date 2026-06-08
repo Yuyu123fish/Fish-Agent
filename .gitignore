@@ -46,3 +46,13 @@ src/main/resources/application-dev.yml
 temp/
 .superpowers/
 .docs/
+
+### pnpm 本地缓存 ###
+.pnpm-store/
+
+### 工具生成的文件索引 ###
+**/java_files.txt
+
+### 前端自动生成类型（每次 build 重新生成） ###
+frontend/auto-imports.d.ts
+frontend/components.d.ts

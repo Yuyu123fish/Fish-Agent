@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-**查询分解 → 四索引双路并发召回 → RRF 分数融合 → Cross-Encoder 精排 → Top-K 注入 SystemMessage** 五级管线，配合 **HyDE 假设性答案增强** 与 **ES 异步质量追踪**，实现数据驱动的检索闭环。
+**查询分解 → 四索引双路并发召回（es-text/es-vector 熔断保护 [v5.0]）→ RRF 分数融合 → Cross-Encoder 精排（rerank 熔断保护 [v5.0]）→ Top-K 注入 SystemMessage** 五级管线，配合 **HyDE 假设性答案增强**、**ES 异步质量追踪** 与 **Resilience4j 外部服务熔断降级 [v5.0]**，实现数据驱动的检索闭环。
 
 ---
 
@@ -42,6 +42,12 @@ flowchart TB
         V["向量路：knn(embedding)"]
     end
 
+    subgraph CB["熔断保护 [v5.0]"]
+        CB_ES_T["es-text 熔断器<br/>3s slow / 20s wait<br/>降级→空列表"]
+        CB_ES_V["es-vector 熔断器<br/>5s slow / 30s wait<br/>降级→空列表"]
+        CB_RERANK["rerank 熔断器<br/>5s slow / 30s wait<br/>降级→候选池前N"]
+    end
+
     subgraph Fusion["RRF 分数融合（v3.4）"]
         RRF["RagScoreFusion.fuseByRrf<br/>按排名倒数加权<br/>候选池 poolSize=50"]
     end
@@ -63,7 +69,10 @@ flowchart TB
     Q --> RW --> Expand
     Expand --> Recall
     Expand --> HyDE --> HD_EMB --> Recall
+    CB_ES_T --> T
+    CB_ES_V --> V
     Recall --> Fusion --> Rerank --> TopK --> Inject
+    CB_RERANK --> Rerank
     Recall --> Trace
     Rerank --> Trace
     TopK --> Trace
@@ -178,12 +187,14 @@ public record RecallHit(String id, String content, double score, String source) 
 1. 查询扩展（`SubQueryExpander.expand()`）→ 得到子查询列表
 2. HyDE（可选）→ 生成假设性答案，替代原 query 做 embedding
 3. 每条子查询 → 4 索引 × 2 路 = 8 路并发检索（虚拟线程 + `CompletableFuture.allOf()`）
+   - **文本路经 `safeTextSearch()` 包裹 [v5.0]**：`CircuitBreakerHelper.executeSupplier(CB_ES_TEXT, ...)` 保护，OPEN 时返回空列表
+   - **向量路经 `safeVectorSearch()` 包裹 [v5.0]**：`CircuitBreakerHelper.executeSupplier(CB_ES_VECTOR, ...)` 保护，OPEN 时返回空列表
 4. RRF 分数融合 → 候选池
-5. DashScope 精排 → Top-N
+5. DashScope 精排（`rerank` 熔断保护 [v5.0]，OPEN 时合成空响应 → 自动降级到候选池前 N）
 6. `renderBlock()` 格式化为编号列表，拼入 SystemMessage
 7. 质量追踪（`RagQualityLogger.log()`）
 
-**虚拟线程下 ThreadLocal 传递**：`UserContextHolder` 在异步检索中显式快照回放（详见模块 6）。
+**虚拟线程下 ThreadLocal 传递**：`UserContextHolder` 在异步检索中显式快照回放（详见模块 6）。**v5.0 异步任务全部用 `MdcAsync` 替代裸 `CompletableFuture`，traceId 自动传播至 worker 线程。**
 
 配置项（`fish.rag.recall.*`）：
 
@@ -497,10 +508,13 @@ pending 和 rejected 卡片不参与 RAG 检索，避免未审核内容污染对
 管线中各阶段都有降级策略：
 - **查询扩展**：LLM 超时 3s → 降级为原句（零延迟）
 - **HyDE**：超时 3s → 返回 null，用原 query embedding（零延迟）
-- **精排**：超时 5s / API 失败 → 截取融合池前 N 条（零延迟）
+- **ES 文本/向量召回 [v5.0]**：`safeTextSearch` / `safeVectorSearch` 被 `CircuitBreakerHelper` 包裹。ES 持续故障 → 熔断器 OPEN → 立即返回空列表（零延迟），RAG 自动降级为单路结果
+- **精排 [v5.0]**：`DashScopeRagReranker` 被 `rerank` 熔断器保护。DashScope 持续故障 → OPEN → 合成空响应 → 自动降级到融合池前 N 条（零延迟）
 - **追踪**：异步写 ES，完全不阻塞
 
-最坏情况（全链路开启且正常）：扩展 ~1s + 召回 ~60ms + 融合 ~5ms + 精排 ~500ms = ~1.5s。最佳情况（全降级）：~60ms（仅四路召回）。
+最坏情况（全链路开启且正常）：扩展 ~1s + 召回 ~60ms + 融合 ~5ms + 精排 ~500ms = ~1.5s。最佳情况（全降级/熔断）：~60ms（仅四路召回中未熔断的路）。
+
+**v5.0 关键改进**：熔断器将"持续性故障导致的超时等待"变为"毫秒级快速失败"。ES 慢查询（>3s/5s 慢调用率 ≥80%）也会触发熔断——不只是崩溃保护，还是延迟保护。
 
 **Q：RRF 的 k=60 是怎么定的？**
 
@@ -541,6 +555,8 @@ k 是平滑常数——k 越大，top-1 和 top-2 的融合分差距越小（越
 |------|------|
 | **召回编排（核心入口）** | `rag/pipeline/recall/RagRecall.java` |
 | 召回配置 | `rag/pipeline/recall/RagRecallConfiguration.java` |
+| **熔断器同步工具 [v5.0]** | `common/resilience/CircuitBreakerHelper.java` |
+| **熔断器常量 [v5.0]** | `common/resilience/ResilienceConstants.java` |
 | 用户记忆检索 | `rag/pipeline/recall/UserMemoryElasticsearchSearcher.java` |
 | 用户知识检索 | `rag/pipeline/recall/UserKnowledgeElasticsearchSearcher.java` |
 | **知识卡片检索** | `rag/pipeline/recall/UserKnowledgeCardSearcher.java` |
@@ -553,6 +569,7 @@ k 是平滑常数——k 越大，top-1 和 top-2 的融合分差距越小（越
 | **RRF 分数融合** | `rag/pipeline/fusion/RagScoreFusion.java` |
 | **DashScope 精排** | `rag/pipeline/rerank/DashScopeRagReranker.java` |
 | 精排接口 | `rag/pipeline/rerank/RagReranker.java` |
+| **熔断事件日志 [v5.0]** | `common/resilience/ResilienceConfig.java` |
 | **质量追踪** | `rag/tracing/RagQualityLogger.java` |
 | 追踪文档 | `rag/tracing/RagTraceDocument.java` |
 | RAG 配置 | `rag/config/RagProperties.java`（含 Recall / Expand / Hyde / Fusion / Rerank / Tracing 嵌套类） |

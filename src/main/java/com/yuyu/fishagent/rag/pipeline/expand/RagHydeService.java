@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.rag.pipeline.expand;
 
+import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.messages.SystemMessage;
@@ -8,7 +9,6 @@ import org.springframework.ai.chat.model.ChatModel;
 import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.ObjectProvider;
 
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 
@@ -42,7 +42,7 @@ public final class RagHydeService {
         }
         long timeoutMs = Math.max(1, ragProperties.getHyde().getTimeoutMs());
         try {
-            String text = CompletableFuture.supplyAsync(() -> {
+            String text = MdcAsync.mdcSupplyAsync(() -> {
                 Prompt prompt = new Prompt(
                         new SystemMessage(SYSTEM_INSTRUCTION),
                         new UserMessage(query.trim()));

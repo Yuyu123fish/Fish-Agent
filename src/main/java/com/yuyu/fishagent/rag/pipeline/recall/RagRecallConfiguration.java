@@ -3,6 +3,7 @@ package com.yuyu.fishagent.rag.pipeline.recall;
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
 import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
+import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.DashScopeRagReranker;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
@@ -30,8 +31,8 @@ public class RagRecallConfiguration {
     }
 
     @Bean
-    public RagReranker ragReranker(RagProperties ragProperties) {
-        return new DashScopeRagReranker(ragProperties);
+    public RagReranker ragReranker(RagProperties ragProperties, CircuitBreakerHelper circuitBreakerHelper) {
+        return new DashScopeRagReranker(ragProperties, circuitBreakerHelper);
     }
 
     @Bean
@@ -54,7 +55,8 @@ public class RagRecallConfiguration {
             @Qualifier("ragRecallExecutor") ExecutorService ragRecallExecutor,
             RagReranker ragReranker,
             RagHydeService ragHydeService,
-            RagQualityLogger ragQualityLogger) {
+            RagQualityLogger ragQualityLogger,
+            CircuitBreakerHelper circuitBreakerHelper) {
         return new RagRecall.DefaultAugmentation(
                 ragProperties,
                 queryRewriter,
@@ -67,6 +69,7 @@ public class RagRecallConfiguration {
                 ragRecallExecutor,
                 ragReranker,
                 ragHydeService,
-                ragQualityLogger);
+                ragQualityLogger,
+                circuitBreakerHelper);
     }
 }
