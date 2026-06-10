@@ -32,6 +32,8 @@ public interface KnowledgeCardMapper extends BaseMapper<KnowledgeCard> {
               kc.group_name AS groupName,
               kc.group_id AS groupId,
               COUNT(cr.id) AS relationCount,
+              kc.review_next_at AS reviewNextAt,
+              kc.review_count AS reviewCount,
               kc.created_at AS createdAt
             FROM knowledge_card kc
             LEFT JOIN card_relation cr ON cr.from_card_id = kc.id OR cr.to_card_id = kc.id
@@ -52,8 +54,22 @@ public interface KnowledgeCardMapper extends BaseMapper<KnowledgeCard> {
                 </otherwise>
               </choose>
             </if>
+            <if test="(groupName == null or groupName == '') and groupId != null">
+              AND kc.group_id = #{groupId}
+            </if>
+            <if test="cardType != null and cardType != ''">
+              AND kc.card_type = #{cardType}
+            </if>
+            <if test="reviewOverdue != null and reviewOverdue == true">
+              AND kc.review_next_at IS NOT NULL AND kc.review_next_at &lt;= NOW()
+            </if>
             GROUP BY kc.id
-            ORDER BY kc.updated_at DESC, kc.id DESC
+            <choose>
+              <when test="sortBy == 'createdAt'">ORDER BY kc.created_at <if test="sortOrder == 'ASC'">ASC</if><if test="sortOrder != 'ASC'">DESC</if>, kc.id DESC</when>
+              <when test="sortBy == 'updatedAt'">ORDER BY kc.updated_at <if test="sortOrder == 'ASC'">ASC</if><if test="sortOrder != 'ASC'">DESC</if>, kc.id DESC</when>
+              <when test="sortBy == 'reviewNextAt'">ORDER BY kc.review_next_at <if test="sortOrder == 'ASC'">ASC</if><if test="sortOrder != 'ASC'">DESC</if>, kc.id DESC</when>
+              <otherwise>ORDER BY kc.updated_at DESC, kc.id DESC</otherwise>
+            </choose>
             LIMIT #{limit} OFFSET #{offset}
             </script>
             """)
@@ -68,6 +84,8 @@ public interface KnowledgeCardMapper extends BaseMapper<KnowledgeCard> {
             @Result(column = "groupName", property = "groupName"),
             @Result(column = "groupId", property = "groupId"),
             @Result(column = "relationCount", property = "relationCount"),
+            @Result(column = "reviewNextAt", property = "reviewNextAt"),
+            @Result(column = "reviewCount", property = "reviewCount"),
             @Result(column = "createdAt", property = "createdAt")
     })
     List<CardListItemVO> selectListItems(@Param("userId") Long userId,
@@ -75,6 +93,10 @@ public interface KnowledgeCardMapper extends BaseMapper<KnowledgeCard> {
                                          @Param("keyword") String keyword,
                                          @Param("groupName") String groupName,
                                          @Param("groupId") Long groupId,
+                                         @Param("cardType") String cardType,
+                                         @Param("reviewOverdue") Boolean reviewOverdue,
+                                         @Param("sortBy") String sortBy,
+                                         @Param("sortOrder") String sortOrder,
                                          @Param("limit") long limit,
                                          @Param("offset") long offset);
 
@@ -99,13 +121,24 @@ public interface KnowledgeCardMapper extends BaseMapper<KnowledgeCard> {
                 </otherwise>
               </choose>
             </if>
+            <if test="(groupName == null or groupName == '') and groupId != null">
+              AND kc.group_id = #{groupId}
+            </if>
+            <if test="cardType != null and cardType != ''">
+              AND kc.card_type = #{cardType}
+            </if>
+            <if test="reviewOverdue != null and reviewOverdue == true">
+              AND kc.review_next_at IS NOT NULL AND kc.review_next_at &lt;= NOW()
+            </if>
             </script>
             """)
     long countListItems(@Param("userId") Long userId,
                         @Param("status") String status,
                         @Param("keyword") String keyword,
                         @Param("groupName") String groupName,
-                        @Param("groupId") Long groupId);
+                        @Param("groupId") Long groupId,
+                        @Param("cardType") String cardType,
+                        @Param("reviewOverdue") Boolean reviewOverdue);
 
     /**
      * 兼容遗留：从 knowledge_card.group_name 聚合，过渡期保留。

@@ -276,7 +276,8 @@ public class CardExtractService {
                 relations,
                 List.of(),
                 card.getCreatedAt(),
-                card.getUpdatedAt()
+                card.getUpdatedAt(),
+                null
         );
     }
 

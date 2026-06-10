@@ -26,5 +26,7 @@ public class CardListItemVO {
     private String groupName;
     private Long groupId;
     private Long relationCount;
+    private LocalDateTime reviewNextAt;
+    private Integer reviewCount;
     private LocalDateTime createdAt;
 }

@@ -32,3 +32,34 @@ export function formatRelativeTime(ts?: number | null): string {
     ? d.toLocaleDateString([], { month: '2-digit', day: '2-digit' })
     : d.toLocaleDateString()
 }
+
+/**
+ * Format a date string as relative time from now.
+ * Supports past and future dates.
+ */
+export function relativeTime(dateStr?: string | null): string {
+  if (!dateStr) return '—'
+  const diffDays = Math.ceil((new Date(dateStr).getTime() - Date.now()) / 86400000)
+  if (diffDays < -30) return `${Math.ceil(Math.abs(diffDays) / 30)}个月前`
+  if (diffDays < -7) return `${Math.ceil(Math.abs(diffDays) / 7)}周前`
+  if (diffDays < -1) return `${Math.abs(diffDays)}天前`
+  if (diffDays === -1) return '昨天'
+  if (diffDays === 0) return '今天'
+  if (diffDays === 1) return '明天'
+  if (diffDays <= 7) return `${diffDays}天后`
+  if (diffDays <= 30) return `${Math.ceil(diffDays / 7)}周后`
+  return `${Math.ceil(diffDays / 30)}个月后`
+}
+
+/**
+ * Format a date string for display (past only).
+ */
+export function relativePastTime(dateStr?: string | null): string {
+  if (!dateStr) return ''
+  const diff = Math.ceil((Date.now() - new Date(dateStr).getTime()) / 86400000)
+  if (diff <= 0) return '今天'
+  if (diff === 1) return '昨天'
+  if (diff <= 7) return `${diff}天前`
+  if (diff <= 30) return `${Math.ceil(diff / 7)}周前`
+  return `${Math.ceil(diff / 30)}月前`
+}

@@ -22,6 +22,7 @@ public record CardVO(
         List<CardRelationVO> relations,
         List<RelatedChunkVO> relatedChunks,
         LocalDateTime createdAt,
-        LocalDateTime updatedAt
+        LocalDateTime updatedAt,
+        ReviewInfoDTO reviewInfo
 ) {
 }

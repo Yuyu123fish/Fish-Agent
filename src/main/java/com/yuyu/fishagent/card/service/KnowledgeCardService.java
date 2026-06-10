@@ -57,6 +57,7 @@ public class KnowledgeCardService {
     private final KeywordService keywordService;
     private final CardGroupService cardGroupService;
     private final ChunkClusterService chunkClusterService;
+    private final CardReviewService cardReviewService;
 
     /**
      * 手动创建卡片：阶段 1 直接进入 confirmed，保证创建后即可在页面和 ES 中检索。
@@ -85,7 +86,8 @@ public class KnowledgeCardService {
     /**
      * 分页查询当前用户卡片，支持 groupName（过渡期）和 groupId 筛选。
      */
-    public CardPageVO list(long page, long size, String status, String keyword, String groupName, Long groupId) {
+    public CardPageVO list(long page, long size, String status, String keyword, String groupName, Long groupId,
+                           String cardType, Boolean reviewOverdue, String sortBy, String sortOrder) {
         Long userId = requireUserId();
         long current = Math.max(1, page);
         long pageSize = Math.min(MAX_PAGE_SIZE, Math.max(1, size));
@@ -93,10 +95,16 @@ public class KnowledgeCardService {
         String safeKeyword = trimToNull(keyword);
         String safeGroup = normalizeGroupFilter(groupName);
         Long safeGroupId = groupId != null && groupId > 0 ? groupId : null;
-        long total = knowledgeCardMapper.countListItems(userId, safeStatus, safeKeyword, safeGroup, safeGroupId);
+        String safeCardType = normalizeCardTypeFilter(cardType);
+        Boolean safeReviewOverdue = Boolean.TRUE.equals(reviewOverdue) ? Boolean.TRUE : null;
+        String safeSortBy = normalizeSortBy(sortBy);
+        String safeSortOrder = normalizeSortOrder(sortOrder);
+        long total = knowledgeCardMapper.countListItems(userId, safeStatus, safeKeyword, safeGroup, safeGroupId,
+                safeCardType, safeReviewOverdue);
         List<CardListItemVO> records = total == 0
                 ? List.of()
-                : knowledgeCardMapper.selectListItems(userId, safeStatus, safeKeyword, safeGroup, safeGroupId, pageSize, (current - 1) * pageSize);
+                : knowledgeCardMapper.selectListItems(userId, safeStatus, safeKeyword, safeGroup, safeGroupId,
+                safeCardType, safeReviewOverdue, safeSortBy, safeSortOrder, pageSize, (current - 1) * pageSize);
         return new CardPageVO(records, total, current, pageSize);
     }
 
@@ -394,7 +402,8 @@ public class KnowledgeCardService {
                 relations == null ? List.of() : relations,
                 chunkClusterService.findRelatedChunksForCard(card),
                 card.getCreatedAt(),
-                card.getUpdatedAt()
+                card.getUpdatedAt(),
+                cardReviewService.buildReviewInfo(card.getUserId(), card)
         );
     }
 
@@ -452,6 +461,33 @@ public class KnowledgeCardService {
             return s;
         }
         throw new IllegalArgumentException("cardType 只能是 concept 或 topic");
+    }
+
+    private static String normalizeCardTypeFilter(String raw) {
+        String s = trimToNull(raw);
+        if (s == null || "all".equalsIgnoreCase(s)) {
+            return null;
+        }
+        return normalizeCardType(s);
+    }
+
+    private static String normalizeSortBy(String raw) {
+        String s = trimToNull(raw);
+        if (s == null || "default".equalsIgnoreCase(s)) {
+            return null;
+        }
+        if ("createdAt".equals(s) || "updatedAt".equals(s) || "reviewNextAt".equals(s)) {
+            return s;
+        }
+        throw new IllegalArgumentException("sortBy 参数不合法");
+    }
+
+    private static String normalizeSortOrder(String raw) {
+        String s = trimToNull(raw);
+        if ("asc".equalsIgnoreCase(s)) {
+            return "ASC";
+        }
+        return "DESC";
     }
 
     private static String normalizeStatusFilter(String raw) {

@@ -1,14 +1,17 @@
 <script setup lang="ts">
-/**
- * 知识卡片复习模式。
- *
- * 当前阶段只做前端临时队列；后续如果要持久化复习记录，可以把 answerCurrent 的队列策略替换为后端调度结果。
- */
 import { computed, onMounted, ref, watch } from 'vue'
-import { marked } from 'marked'
+import { renderMarkdown } from '@/utils/markdown'
 import { ElMessage } from 'element-plus'
 import { Check, Close, RefreshLeft, Warning } from '@element-plus/icons-vue'
-import { getCard, listCards, type CardDetail } from '@/api/card'
+import ReviewStatsPanel from '@/components/ReviewStatsPanel.vue'
+import {
+  getReviewQueue,
+  getReviewStats,
+  submitReviewAnswer,
+  type ReviewAnswerResponse,
+  type ReviewCardVO,
+  type ReviewStatsResponse
+} from '@/api/card'
 
 const props = defineProps<{
   groupId?: number | null
@@ -17,52 +20,69 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   close: []
+  reviewed: []
 }>()
 
-type ReviewAction = 'forgot' | 'fuzzy' | 'known'
-
 const loading = ref(false)
-const queue = ref<CardDetail[]>([])
+const queue = ref<ReviewCardVO[]>([])
 const total = ref(0)
 const completedCount = ref(0)
 const flipped = ref(false)
+const lastAnswer = ref<ReviewAnswerResponse | null>(null)
+const sessionStats = ref({ correct: 0, total: 0, qualitySum: 0 })
+const showFullStats = ref(false)
+const fullStats = ref<ReviewStatsResponse>({
+  totalCards: 0,
+  mastered: 0,
+  learning: 0,
+  dueToday: 0,
+  streakDays: 0,
+  reviewCalendar: {},
+  weeklyActivity: [0, 0, 0, 0, 0, 0, 0]
+})
 
 const currentCard = computed(() => queue.value[0] ?? null)
 const hasCards = computed(() => total.value > 0)
 const isFinished = computed(() => hasCards.value && queue.value.length === 0)
 const progressPercent = computed(() => {
   if (total.value === 0) return 0
-  return Math.round((completedCount.value / total.value) * 100)
+  return Math.min(100, Math.round((completedCount.value / total.value) * 100))
 })
 const currentIndexText = computed(() => {
   if (!currentCard.value) return `${completedCount.value}/${total.value}`
   return `${Math.min(completedCount.value + 1, total.value)}/${total.value}`
 })
-const currentHtml = computed(() => (currentCard.value?.content ? (marked.parse(currentCard.value.content) as string) : ''))
+const currentHtml = computed(() => renderMarkdown(currentCard.value?.content ?? ''))
+const accuracy = computed(() => {
+  if (sessionStats.value.total === 0) return 0
+  return Math.round((sessionStats.value.correct / sessionStats.value.total) * 100)
+})
+const averageQuality = computed(() => {
+  if (sessionStats.value.total === 0) return '0.0'
+  return (sessionStats.value.qualitySum / sessionStats.value.total).toFixed(1)
+})
 
 onMounted(() => void loadReviewQueue())
 
 watch(
-  () => [props.groupId, props.groupName] as const,
-  () => void loadReviewQueue()
+  () => props.groupId,
+  () => {
+    if (queue.value.length > 0 && sessionStats.value.total > 0) return  // don't reset mid-session
+    void loadReviewQueue()
+  }
 )
 
 async function loadReviewQueue() {
   loading.value = true
   flipped.value = false
   completedCount.value = 0
+  lastAnswer.value = null
+  showFullStats.value = false
+  sessionStats.value = { correct: 0, total: 0, qualitySum: 0 }
   try {
-    const page = await listCards({
-      page: 1,
-      size: 9999,
-      status: 'confirmed',
-      groupId: props.groupId && props.groupId > 0 ? props.groupId : undefined,
-      groupName: props.groupId ? undefined : props.groupName
-    })
-    // 列表接口只返回预览，复习背面需要完整正文，因此按卡片详情补齐内容。
-    const details = await Promise.all(page.records.map((item) => getCard(item.id)))
-    queue.value = shuffle(details)
-    total.value = details.length
+    const result = await getReviewQueue(props.groupId ?? undefined)
+    queue.value = shuffle(result.cards)
+    total.value = result.totalDue + result.totalNew
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '加载复习卡片失败')
     queue.value = []
@@ -77,17 +97,43 @@ function flipCard() {
   flipped.value = !flipped.value
 }
 
-function answerCurrent(action: ReviewAction) {
+async function answerCurrent(quality: 0 | 3 | 5) {
   if (!currentCard.value) return
-  const [head, ...rest] = queue.value
-  if (action === 'known') {
-    completedCount.value += 1
-    queue.value = rest
-  } else {
-    // 模糊和忘了都延后复现；保留 action 参数是为了后续扩展不同间隔策略。
-    queue.value = [...rest, head]
+  try {
+    const [head, ...rest] = queue.value
+    const result = await submitReviewAnswer(head.id, quality)
+    lastAnswer.value = result
+    sessionStats.value.total += 1
+    sessionStats.value.qualitySum += quality
+    if (quality >= 3) sessionStats.value.correct += 1
+
+    if (quality >= 3) {
+      completedCount.value += 1
+      queue.value = rest
+    } else {
+      queue.value = [...rest, head]
+    }
+    flipped.value = false
+    emit('reviewed')
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '提交评分失败')
   }
-  flipped.value = false
+}
+
+async function openFullStats() {
+  try {
+    fullStats.value = await getReviewStats()
+    showFullStats.value = true
+  } catch {
+    ElMessage.error('加载统计失败')
+  }
+}
+
+function intervalText(days: number): string {
+  if (days <= 1) return '1 天后'
+  if (days <= 7) return `${days} 天后`
+  if (days <= 30) return `${Math.round(days / 7)} 周后`
+  return `${Math.round(days / 30)} 个月后`
 }
 
 function shuffle<T>(items: T[]): T[] {
@@ -114,17 +160,30 @@ function shuffle<T>(items: T[]): T[] {
     </header>
 
     <div v-if="!loading && !hasCards" class="review-empty">
-      <strong>当前分组没有可复习的卡片</strong>
-      <span>确认卡片后即可进入复习队列。</span>
+      <strong>当前没有到期或新卡片</strong>
+      <span>确认卡片后会自动进入复习队列。</span>
+      <button class="ghost-btn" type="button" @click="openFullStats">查看统计</button>
+      <ReviewStatsPanel v-if="showFullStats" :stats="fullStats" @close="showFullStats = false" />
     </div>
 
     <div v-else-if="!loading && isFinished" class="review-empty done">
       <strong>全部复习完成</strong>
-      <span>这轮卡片都已标记为熟悉。</span>
-      <button class="primary-btn" type="button" @click="loadReviewQueue">
-        <el-icon><RefreshLeft /></el-icon>
-        再来一轮
-      </button>
+      <div class="session-summary">
+        <span>本轮 {{ sessionStats.total }} 张</span>
+        <span>正确率 {{ accuracy }}%</span>
+        <span>平均评分 {{ averageQuality }}</span>
+      </div>
+      <div v-if="lastAnswer" class="interval-preview">
+        最近一次下次复习：{{ intervalText(lastAnswer.intervalDays) }}
+      </div>
+      <div class="done-actions">
+        <button class="primary-btn" type="button" @click="loadReviewQueue">
+          <el-icon><RefreshLeft /></el-icon>
+          再来一轮
+        </button>
+        <button class="ghost-btn" type="button" @click="openFullStats">查看统计</button>
+      </div>
+      <ReviewStatsPanel v-if="showFullStats" :stats="fullStats" @close="showFullStats = false" />
     </div>
 
     <template v-else-if="currentCard">
@@ -141,23 +200,26 @@ function shuffle<T>(items: T[]): T[] {
             </div>
           </div>
           <div class="review-face back">
-            <span class="group-name">{{ currentCard.groupPath || currentCard.groupName || '未分组' }}</span>
+            <span class="group-name">{{ currentCard.reviewInfo?.nextReviewAt ? currentCard.groupPath || '未分组' : currentCard.groupPath || '新卡片' }}</span>
             <h3>{{ currentCard.title }}</h3>
             <section class="markdown-body content" v-html="currentHtml" />
+            <div v-if="currentCard.reviewInfo?.reviewCount" class="interval-preview">
+              当前间隔：{{ currentCard.reviewInfo.intervalDays }} 天 · 已复习 {{ currentCard.reviewInfo.reviewCount }} 次
+            </div>
           </div>
         </article>
       </button>
 
       <div class="answer-row" :class="{ visible: flipped }">
-        <button class="answer-btn forgot" type="button" :disabled="!flipped" @click="answerCurrent('forgot')">
+        <button class="answer-btn forgot" type="button" :disabled="!flipped" @click="answerCurrent(0)">
           <el-icon><Warning /></el-icon>
           忘了
         </button>
-        <button class="answer-btn fuzzy" type="button" :disabled="!flipped" @click="answerCurrent('fuzzy')">
+        <button class="answer-btn fuzzy" type="button" :disabled="!flipped" @click="answerCurrent(3)">
           <el-icon><RefreshLeft /></el-icon>
           模糊
         </button>
-        <button class="answer-btn known" type="button" :disabled="!flipped" @click="answerCurrent('known')">
+        <button class="answer-btn known" type="button" :disabled="!flipped" @click="answerCurrent(5)">
           <el-icon><Check /></el-icon>
           熟悉
         </button>
@@ -252,6 +314,23 @@ h2 {
 
 .done strong {
   color: var(--status-ok);
+}
+
+.session-summary,
+.done-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 10px;
+}
+
+.session-summary span,
+.interval-preview {
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  font-size: 13px;
 }
 
 .flip-stage {

@@ -1,13 +1,14 @@
 <script setup lang="ts">
 /**
- * 知识卡片主页面：阶段 3.2 支持树形分组、groupId 筛选。
+ * 知识卡片主页面：三栏布局承载分组导航、卡片工作区和详情面板。
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { Link, Refresh, Plus, Search, ArrowRight, View } from '@element-plus/icons-vue'
+import { Link, Plus, Refresh, Search, View } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import AppHeader from '@/components/AppHeader.vue'
 import DrawerSidebar from '@/components/DrawerSidebar.vue'
+import CardSidebar from '@/components/CardSidebar.vue'
 import CardGrid from '@/components/CardGrid.vue'
 import CardGraphView from '@/components/CardGraphView.vue'
 import CardReviewMode from '@/components/CardReviewMode.vue'
@@ -19,8 +20,10 @@ import {
   batchConfirmCards,
   batchRejectCards,
   deleteCard,
-  getCardStats,
+  getCard,
   getCardGroups,
+  getCardStats,
+  getReviewStats,
   listCards,
   type CardDetail,
   type CardListItem,
@@ -43,12 +46,18 @@ const page = ref(1)
 const pageSize = ref(12)
 const keyword = ref('')
 const status = ref<'all' | 'confirmed' | 'pending' | 'rejected'>('all')
+const cardTypeFilter = ref<'all' | 'concept' | 'topic'>('all')
+const sortBy = ref<'default' | 'createdAt' | 'updatedAt' | 'reviewNextAt'>('default')
+const sortOrder = ref<'asc' | 'desc'>('desc')
+const reviewOverdue = ref(false)
 const groupName = ref('all')
 const groupId = ref<number | null>(null)
 const viewMode = ref<'grid' | 'graph'>('grid')
 const reviewMode = ref(false)
 const groupTree = ref<GroupTreeNode[]>([])
-const expandedGroupId = ref<number | null>(null)
+const expandedCardId = ref<number | null>(null)
+const sidebarDrawerVisible = ref(false)
+const dueTodayCount = ref(0)
 const stats = ref<CardStats>({
   total: 0,
   confirmed: 0,
@@ -66,21 +75,9 @@ const dialogVisible = ref(false)
 const editingCard = ref<CardDetail | null>(null)
 const discoveryVisible = ref(false)
 
-const groupOptions = computed(() => flattenGroupNames(groupTree.value))
 const showEmptyGuide = computed(() => !loading.value && stats.value.total === 0)
 const visiblePendingIds = computed(() => cards.value.filter((c) => c.status === 'pending').map((c) => c.id))
 
-/** 从树中收集所有分组名（用于 cascader 兼容） */
-function flattenGroupNames(nodes: GroupTreeNode[]): string[] {
-  const out: string[] = []
-  for (const n of nodes) {
-    out.push(n.name)
-    if (n.children?.length) out.push(...flattenGroupNames(n.children))
-  }
-  return out
-}
-
-/** 切换分组：支持 groupId */
 function selectGroup(gId: number | null, gName?: string) {
   if (gId == null) {
     groupId.value = null
@@ -92,19 +89,10 @@ function selectGroup(gId: number | null, gName?: string) {
   resetAndLoad()
 }
 
-/** 统计树中所有节点的卡片总数（含子节点） */
-function totalCount(node: GroupTreeNode): number {
-  let sum = node.cardCount
-  if (node.children?.length) {
-    for (const c of node.children) sum += totalCount(c)
-  }
-  return sum
-}
-
 async function loadCards() {
   loading.value = true
   try {
-    const [statData, pageData, treeData] = await Promise.all([
+    const [statData, pageData, treeData, reviewStats] = await Promise.all([
       getCardStats(),
       listCards({
         page: page.value,
@@ -112,14 +100,20 @@ async function loadCards() {
         keyword: keyword.value,
         status: status.value,
         groupName: groupId.value ? undefined : groupName.value,
-        groupId: groupId.value
+        groupId: groupId.value,
+        cardType: cardTypeFilter.value !== 'all' ? cardTypeFilter.value : undefined,
+        reviewOverdue: reviewOverdue.value || undefined,
+        sortBy: sortBy.value !== 'default' ? sortBy.value : undefined,
+        sortOrder: sortBy.value !== 'default' ? sortOrder.value : undefined
       }),
-      getCardGroups()
+      getCardGroups(),
+      getReviewStats().catch(() => null)
     ])
     stats.value = statData
     cards.value = pageData.records
     total.value = pageData.total
     groupTree.value = treeData
+    dueTodayCount.value = reviewStats?.dueToday ?? dueTodayCount.value
     selectedIds.value = selectedIds.value.filter((id) => pageData.records.some((c) => c.id === id))
   } catch (e) {
     ElMessage.error(e instanceof Error ? e.message : '加载知识卡片失败')
@@ -128,9 +122,24 @@ async function loadCards() {
   }
 }
 
+async function loadDueCount() {
+  try {
+    const reviewStats = await getReviewStats()
+    dueTodayCount.value = reviewStats.dueToday
+  } catch {
+    // 复习统计不影响主列表渲染，静默降级。
+  }
+}
+
 function resetAndLoad() {
+  expandedCardId.value = null
   if (page.value === 1) void loadCards()
   else page.value = 1
+}
+
+function toggleReviewOverdue() {
+  reviewOverdue.value = !reviewOverdue.value
+  resetAndLoad()
 }
 
 function openCreate() {
@@ -157,7 +166,6 @@ async function handleSaved() {
   editingCard.value = null
   await loadCards()
   if (selectedCardId.value) {
-    // 详情面板内部自行拉取详情，刷新 key 用于编辑保存后强制重建面板状态。
     detailRefreshKey.value += 1
   }
 }
@@ -175,11 +183,7 @@ function toggleSelection(card: CardListItem, checked: boolean) {
 }
 
 function toggleSelectAll(checked: string | number | boolean) {
-  if (checked) {
-    selectedIds.value = cards.value.map((c) => c.id)
-  } else {
-    selectedIds.value = []
-  }
+  selectedIds.value = checked ? cards.value.map((c) => c.id) : []
 }
 
 async function batchConfirm(ids = selectedIds.value) {
@@ -234,7 +238,6 @@ async function handleRelationsConfirmed() {
   await loadCards()
 }
 
-/** 进入复习时清空批量选择，避免隐藏列表后仍保留悬浮批量操作条。 */
 function openReviewMode() {
   selectedIds.value = []
   reviewMode.value = true
@@ -242,6 +245,53 @@ function openReviewMode() {
 
 function closeReviewMode() {
   reviewMode.value = false
+  void loadDueCount()
+  void loadCards()
+}
+
+function handleExpand(cardId: number | null) {
+  expandedCardId.value = expandedCardId.value === cardId ? null : cardId
+}
+
+async function handleCardAction(cardId: number, action: 'confirm' | 'edit' | 'reject' | 'delete') {
+  if (action === 'confirm') {
+    await batchConfirm([cardId])
+    return
+  }
+  if (action === 'reject') {
+    await batchReject([cardId])
+    return
+  }
+  if (action === 'edit') {
+    try {
+      editingCard.value = await getCard(cardId)
+      dialogVisible.value = true
+    } catch (e) {
+      ElMessage.error(e instanceof Error ? e.message : '加载卡片失败')
+    }
+    return
+  }
+  try {
+    await ElMessageBox.confirm('确定删除这张卡片？删除后不可恢复。', '删除确认', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消'
+    })
+  } catch {
+    return
+  }
+  try {
+    await deleteCard(cardId)
+    ElMessage.success('已删除')
+    await loadCards()
+  } catch (e) {
+    ElMessage.error(e instanceof Error ? e.message : '删除失败')
+  }
+}
+
+function handleKeywordClick(kw: string) {
+  keyword.value = kw
+  resetAndLoad()
 }
 
 onMounted(async () => {
@@ -264,205 +314,197 @@ function openCardFromRoute() {
   <DrawerSidebar />
 
   <main class="cards-page">
-    <section class="cards-shell">
-      <header class="page-head">
-        <div>
-          <h1>知识卡片</h1>
-          <p>整理概念、主题和关键经验，让知识可复用、可检索、可连接。</p>
-        </div>
-        <button class="primary-btn" type="button" @click="openCreate">
-          <el-icon><Plus /></el-icon>
-          手动创建
-        </button>
-      </header>
+    <div class="three-column">
+      <CardSidebar
+        class="desktop-sidebar"
+        :group-tree="groupTree"
+        :current-group-id="groupId"
+        @select="selectGroup"
+        @discover="discoveryVisible = true"
+      />
 
-      <section class="stats-strip">
-        <div class="stat-item">
-          <span>总卡片</span>
-          <strong>{{ stats.total }}</strong>
-        </div>
-        <div class="stat-item">
-          <span>已确认</span>
-          <strong>{{ stats.confirmed }}</strong>
-        </div>
-        <div class="stat-item">
-          <span>待确认</span>
-          <strong>{{ stats.pending }}</strong>
-        </div>
-        <div class="stat-item">
-          <span>关联</span>
-          <strong>{{ stats.relationCount }}</strong>
-        </div>
-        <div class="stat-item">
-          <span>近 7 天</span>
-          <strong>{{ stats.weekNew }}</strong>
-        </div>
-      </section>
-
-      <EmptyCardGuide v-if="showEmptyGuide" @create="openCreate" />
-
-      <template v-else>
-        <section class="toolbar">
-          <el-input
-            v-model="keyword"
-            class="search"
-            clearable
-            placeholder="搜索标题或内容"
-            :prefix-icon="Search"
-            @keyup.enter="resetAndLoad"
-            @clear="resetAndLoad"
-          />
-          <el-select v-model="status" class="status-select" @change="resetAndLoad">
-            <el-option label="全部状态" value="all" />
-            <el-option label="已确认" value="confirmed" />
-            <el-option label="待确认" value="pending" />
-            <el-option label="已拒绝" value="rejected" />
-          </el-select>
-          <button class="ghost-btn" type="button" @click="resetAndLoad">
-            <el-icon><Search /></el-icon>
-            搜索
-          </button>
-          <button class="icon-btn" title="刷新" type="button" @click="loadCards">
-            <el-icon><Refresh /></el-icon>
-          </button>
-          <button class="ghost-btn" type="button" :disabled="visiblePendingIds.length === 0" @click="batchConfirm(visiblePendingIds)">
-            {{ visiblePendingIds.length > 0 ? `全部确认 (${visiblePendingIds.length})` : '无待确认' }}
-          </button>
-          <button class="ghost-btn danger-text" type="button" :disabled="visiblePendingIds.length === 0" @click="batchReject(visiblePendingIds)">
-            {{ visiblePendingIds.length > 0 ? `全部拒绝 (${visiblePendingIds.length})` : '无待确认' }}
-          </button>
-          <button class="ghost-btn review-btn" type="button" :class="{ active: reviewMode }" @click="openReviewMode">
-            <el-icon><View /></el-icon>
-            复习
-          </button>
-          <div class="view-switch">
-            <button
-              type="button"
-              class="view-btn"
-              :class="{ active: viewMode === 'grid' }"
-              @click="viewMode = 'grid'"
-            >
-              ☐ 卡片
-            </button>
-            <button
-              type="button"
-              class="view-btn"
-              :class="{ active: viewMode === 'graph' }"
-              @click="viewMode = 'graph'"
-            >
-              ◉ 图谱
-            </button>
+      <section class="main-column">
+        <header class="page-head">
+          <button class="sidebar-trigger" type="button" @click="sidebarDrawerVisible = true">☰ 分组</button>
+          <div>
+            <h1>知识卡片</h1>
+            <p>整理概念、主题和关键经验，让知识可复用、可检索、可连接。</p>
           </div>
-          <button class="ghost-btn discover-btn" type="button" @click="discoveryVisible = true">
-            <el-icon><Link /></el-icon>
-            发现关联
+          <button class="primary-btn" type="button" @click="openCreate">
+            <el-icon><Plus /></el-icon>
+            手动创建
           </button>
-        </section>
+        </header>
 
-        <section class="group-tabs">
-          <button
-            type="button"
-            class="group-tab"
-            :class="{ active: groupId == null && groupName === 'all' }"
-            @click="selectGroup(null)"
-          >
-            全部分组
-          </button>
-          <div v-for="node in groupTree" :key="node.id" class="group-tab-wrap">
-            <button
-              type="button"
-              class="group-tab"
-              :class="{ active: groupId === node.id }"
-              @click="selectGroup(node.id, node.name)"
-            >
-              {{ node.name }}
-              <span class="tab-count">({{ totalCount(node) }})</span>
-              <el-icon
-                v-if="node.children?.length"
-                class="expand-arrow"
-                :class="{ expanded: expandedGroupId === node.id }"
-                @click.stop="expandedGroupId = expandedGroupId === node.id ? null : node.id"
-              >
-                <ArrowRight />
-              </el-icon>
-            </button>
-            <Transition name="dropdown">
-              <div v-if="node.children?.length && expandedGroupId === node.id" class="sub-group-panel">
-                <button
-                  v-for="child in node.children"
-                  :key="child.id"
-                  type="button"
-                  class="sub-group-item"
-                  :class="{ active: groupId === child.id }"
-                  @click="selectGroup(child.id, child.name)"
-                >
-                  {{ child.name }}
-                  <span class="tab-count">({{ child.cardCount }})</span>
-                </button>
-              </div>
-            </Transition>
+        <section class="stats-strip">
+          <div class="stat-item">
+            <span>总卡片</span>
+            <strong>{{ stats.total }}</strong>
+          </div>
+          <div class="stat-item">
+            <span>已确认</span>
+            <strong>{{ stats.confirmed }}</strong>
+          </div>
+          <div class="stat-item">
+            <span>待确认</span>
+            <strong>{{ stats.pending }}</strong>
+          </div>
+          <div class="stat-item">
+            <span>关联</span>
+            <strong>{{ stats.relationCount }}</strong>
+          </div>
+          <div class="stat-item">
+            <span>近 7 天</span>
+            <strong>{{ stats.weekNew }}</strong>
+          </div>
+          <div class="stat-item">
+            <span>到期复习</span>
+            <strong>{{ dueTodayCount }}</strong>
           </div>
         </section>
 
-        <CardReviewMode
-          v-if="reviewMode"
-          :group-id="groupId"
-          :group-name="groupName"
-          @close="closeReviewMode"
-        />
+        <EmptyCardGuide v-if="showEmptyGuide" @create="openCreate" />
 
         <template v-else>
-          <div v-if="viewMode === 'grid' && cards.length > 0" class="select-all-row">
-            <el-checkbox
-              :model-value="selectedIds.length === cards.length && cards.length > 0"
-              :indeterminate="selectedIds.length > 0 && selectedIds.length < cards.length"
-              @change="toggleSelectAll"
-            >
-              全选（{{ cards.length }} 张）
-            </el-checkbox>
-          </div>
-
-          <div v-if="viewMode === 'grid'" v-loading="loading" class="grid-wrap">
-            <CardGrid
-              v-if="cards.length > 0"
-              :cards="cards"
-              :selected-ids="selectedIds"
-              @select="selectCard"
-              @toggle="toggleSelection"
+          <section class="toolbar-primary">
+            <el-input
+              v-model="keyword"
+              class="search"
+              clearable
+              placeholder="搜索标题或内容"
+              :prefix-icon="Search"
+              @keyup.enter="resetAndLoad"
+              @clear="resetAndLoad"
             />
-            <el-empty v-else description="没有匹配的知识卡片" />
-          </div>
+            <button class="primary-btn" type="button" @click="openCreate">
+              <el-icon><Plus /></el-icon>
+              创建
+            </button>
+            <div class="view-switch">
+              <button type="button" class="view-btn" :class="{ active: viewMode === 'grid' }" @click="viewMode = 'grid'">☐ 卡片</button>
+              <button type="button" class="view-btn" :class="{ active: viewMode === 'graph' }" @click="viewMode = 'graph'">◉ 图谱</button>
+            </div>
+            <button class="ghost-btn review-btn" type="button" :class="{ active: reviewMode }" @click="openReviewMode">
+              <el-icon><View /></el-icon>
+              复习
+              <span v-if="dueTodayCount" class="badge">{{ dueTodayCount }}</span>
+            </button>
+            <button class="icon-btn" title="刷新" type="button" @click="loadCards">
+              <el-icon><Refresh /></el-icon>
+            </button>
+          </section>
 
-          <CardGraphView
-            v-else
+          <section class="toolbar-filters">
+            <el-select v-model="status" class="filter-select" @change="resetAndLoad">
+              <el-option label="全部状态" value="all" />
+              <el-option label="已确认" value="confirmed" />
+              <el-option label="待确认" value="pending" />
+              <el-option label="已拒绝" value="rejected" />
+            </el-select>
+            <el-select v-model="cardTypeFilter" class="filter-select" @change="resetAndLoad">
+              <el-option label="全部类型" value="all" />
+              <el-option label="概念" value="concept" />
+              <el-option label="主题" value="topic" />
+            </el-select>
+            <el-select v-model="sortBy" class="filter-select" @change="resetAndLoad">
+              <el-option label="默认排序" value="default" />
+              <el-option label="最近创建" value="createdAt" />
+              <el-option label="最近更新" value="updatedAt" />
+              <el-option label="复习到期" value="reviewNextAt" />
+            </el-select>
+            <el-select v-if="sortBy !== 'default'" v-model="sortOrder" class="order-select" @change="resetAndLoad">
+              <el-option label="降序" value="desc" />
+              <el-option label="升序" value="asc" />
+            </el-select>
+            <button class="ghost-btn" type="button" :class="{ active: reviewOverdue }" @click="toggleReviewOverdue">
+              复习到期
+            </button>
+            <button class="ghost-btn" type="button" :disabled="visiblePendingIds.length === 0" @click="batchConfirm(visiblePendingIds)">
+              {{ visiblePendingIds.length > 0 ? `全部确认 (${visiblePendingIds.length})` : '无待确认' }}
+            </button>
+            <button class="ghost-btn danger-text" type="button" :disabled="visiblePendingIds.length === 0" @click="batchReject(visiblePendingIds)">
+              {{ visiblePendingIds.length > 0 ? `全部拒绝 (${visiblePendingIds.length})` : '无待确认' }}
+            </button>
+            <button class="ghost-btn discover-btn" type="button" @click="discoveryVisible = true">
+              <el-icon><Link /></el-icon>
+              发现关联
+            </button>
+          </section>
+
+          <CardReviewMode
+            v-if="reviewMode"
             :group-id="groupId"
-            :refresh-key="graphRefreshKey"
-            @open-detail="openDetailById"
+            :group-name="groupName"
+            @close="closeReviewMode"
+            @reviewed="loadDueCount"
           />
 
-          <div v-if="viewMode === 'grid'" class="pager">
-            <el-pagination
-              v-model:current-page="page"
-              v-model:page-size="pageSize"
-              :page-sizes="[12, 24, 48]"
-              :total="total"
-              layout="total, sizes, prev, pager, next"
-              background
+          <template v-else>
+            <div v-if="viewMode === 'grid' && cards.length > 0" class="select-all-row">
+              <el-checkbox
+                :model-value="selectedIds.length === cards.length && cards.length > 0"
+                :indeterminate="selectedIds.length > 0 && selectedIds.length < cards.length"
+                @change="toggleSelectAll"
+              >
+                全选（{{ cards.length }} 张）
+              </el-checkbox>
+            </div>
+
+            <div v-if="viewMode === 'grid'" v-loading="loading" class="grid-wrap">
+              <CardGrid
+                v-if="cards.length > 0"
+                :cards="cards"
+                :selected-ids="selectedIds"
+                :expanded-id="expandedCardId"
+                @select="selectCard"
+                @toggle="toggleSelection"
+                @expand="handleExpand"
+                @action="handleCardAction"
+                @keyword-click="handleKeywordClick"
+              />
+              <el-empty v-else description="没有匹配的知识卡片" />
+            </div>
+
+            <CardGraphView
+              v-else
+              :group-id="groupId"
+              :refresh-key="graphRefreshKey"
+              @open-detail="openDetailById"
             />
-          </div>
+
+            <div v-if="viewMode === 'grid'" class="pager">
+              <el-pagination
+                v-model:current-page="page"
+                v-model:page-size="pageSize"
+                :page-sizes="[12, 24, 48]"
+                :total="total"
+                layout="total, sizes, prev, pager, next"
+                background
+              />
+            </div>
+          </template>
         </template>
-      </template>
-    </section>
+      </section>
+
+      <CardDetailPanel
+        v-if="detailVisible"
+        :key="detailRefreshKey"
+        :card-id="selectedCardId"
+        @close="detailVisible = false"
+        @edit="openEdit"
+        @deleted="handleDeleted"
+      />
+    </div>
   </main>
 
-  <CardDetailPanel
-    :key="detailRefreshKey"
-    :visible="detailVisible"
-    :card-id="selectedCardId"
-    @close="detailVisible = false"
-    @edit="openEdit"
-    @deleted="handleDeleted"
-  />
+  <el-drawer v-model="sidebarDrawerVisible" direction="ltr" size="260px" :show-close="false">
+    <CardSidebar
+      :group-tree="groupTree"
+      :current-group-id="groupId"
+      @select="(id, name) => { selectGroup(id, name); sidebarDrawerVisible = false }"
+      @discover="() => { discoveryVisible = true; sidebarDrawerVisible = false }"
+    />
+  </el-drawer>
 
   <CardCreateDialog
     :visible="dialogVisible"
@@ -494,22 +536,21 @@ function openCardFromRoute() {
   z-index: 1;
   height: 100vh;
   padding-top: 48px;
-  overflow-y: auto;
+  overflow: hidden;
   box-sizing: border-box;
 }
 
-.cards-page > .cards-shell {
-  padding: 24px 20px 32px;
+.three-column {
+  display: flex;
+  height: 100%;
+  overflow: hidden;
 }
 
-.cards-shell {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--bg-elevated);
-  box-shadow: var(--shadow-md);
+.main-column {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 24px 20px 32px;
 }
 
 .page-head {
@@ -518,6 +559,16 @@ function openCardFromRoute() {
   justify-content: space-between;
   gap: 18px;
   margin-bottom: 18px;
+}
+
+.sidebar-trigger {
+  display: none;
+  height: 34px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  background: transparent;
 }
 
 h1 {
@@ -533,7 +584,7 @@ h1 {
 
 .stats-strip {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
@@ -558,19 +609,34 @@ h1 {
   font-size: 22px;
 }
 
-.toolbar {
+.toolbar-primary,
+.toolbar-filters {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.toolbar-primary {
+  margin-bottom: 8px;
+}
+
+.toolbar-filters {
+  flex-wrap: wrap;
   margin-bottom: 12px;
 }
 
 .search {
-  max-width: 320px;
+  flex: 1;
+  min-width: 220px;
+  max-width: 440px;
 }
 
-.status-select {
+.filter-select {
   width: 140px;
+}
+
+.order-select {
+  width: 100px;
 }
 
 .view-switch {
@@ -589,6 +655,7 @@ h1 {
   gap: 6px;
   cursor: pointer;
   white-space: nowrap;
+  letter-spacing: 0;
 }
 
 .primary-btn {
@@ -603,6 +670,11 @@ h1 {
   border: 1px solid var(--border);
   color: var(--text-primary);
   background: transparent;
+}
+
+.ghost-btn.active {
+  border-color: var(--border-bright);
+  background: var(--bg-active);
 }
 
 .ghost-btn:disabled {
@@ -645,6 +717,20 @@ h1 {
   background: var(--bg-active);
 }
 
+.review-btn .badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  color: var(--bg-base);
+  background: var(--status-warning);
+  font-size: 11px;
+  font-weight: 700;
+}
+
 .view-btn {
   padding: 0 14px;
   height: 30px;
@@ -669,109 +755,6 @@ h1 {
 .view-btn.active {
   color: var(--bg-base);
   background: var(--accent);
-}
-
-.group-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-  align-items: flex-start;
-}
-
-.group-tab-wrap {
-  position: relative;
-}
-
-.group-tab {
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  transition: all var(--transition-fast);
-}
-
-.group-tab:hover {
-  color: var(--text-primary);
-  border-color: var(--border-bright);
-}
-
-.group-tab.active {
-  color: var(--bg-base);
-  background: var(--accent);
-  border-color: transparent;
-}
-
-.tab-count {
-  font-size: 11px;
-  opacity: 0.65;
-}
-
-.expand-arrow {
-  font-size: 12px;
-  transition: transform 0.2s ease;
-}
-
-.expand-arrow.expanded {
-  transform: rotate(90deg);
-}
-
-.sub-group-panel {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 10;
-  margin-top: 4px;
-  padding: 6px;
-  min-width: 160px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  box-shadow: var(--shadow-lg);
-}
-
-.sub-group-item {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  width: 100%;
-  padding: 6px 10px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-secondary);
-  font-size: 13px;
-  cursor: pointer;
-  text-align: left;
-  transition: all var(--transition-fast);
-}
-
-.sub-group-item:hover {
-  color: var(--text-primary);
-  background: var(--bg-hover);
-}
-
-.sub-group-item.active {
-  color: var(--text-primary);
-  background: var(--bg-active);
-}
-
-.dropdown-enter-active,
-.dropdown-leave-active {
-  transition: opacity 0.15s ease, transform 0.15s ease;
-}
-
-.dropdown-enter-from,
-.dropdown-leave-to {
-  opacity: 0;
-  transform: translateY(-4px);
 }
 
 .select-all-row {
@@ -830,23 +813,50 @@ h1 {
   transform: translate(-50%, 12px);
 }
 
-@media (max-width: 760px) {
-  .cards-shell {
+@media (max-width: 1199px) {
+  .desktop-sidebar {
+    width: 48px !important;
+  }
+
+  .stats-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 767px) {
+  .desktop-sidebar {
+    display: none;
+  }
+
+  .main-column {
+    width: 100%;
     padding: 16px;
   }
 
   .page-head,
-  .toolbar {
+  .toolbar-primary {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .sidebar-trigger {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    align-self: flex-start;
   }
 
   .stats-strip {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .toolbar-filters {
+    align-items: stretch;
+  }
+
   .search,
-  .status-select {
+  .filter-select,
+  .order-select {
     max-width: none;
     width: 100%;
   }

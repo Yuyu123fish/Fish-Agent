@@ -7,6 +7,8 @@ public record CardRelationVO(
         Long id,
         Long cardId,
         String cardTitle,
+        String cardType,
+        String reviewStatus,
         String relationType,
         Float confidence,
         String direction

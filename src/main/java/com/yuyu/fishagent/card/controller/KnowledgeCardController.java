@@ -61,8 +61,13 @@ public class KnowledgeCardController {
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String groupName,
-            @RequestParam(required = false) Long groupId) {
-        return knowledgeCardService.list(page, size, status, keyword, groupName, groupId);
+            @RequestParam(required = false) Long groupId,
+            @RequestParam(required = false) String cardType,
+            @RequestParam(required = false) Boolean reviewOverdue,
+            @RequestParam(required = false) String sortBy,
+            @RequestParam(required = false, defaultValue = "desc") String sortOrder) {
+        return knowledgeCardService.list(page, size, status, keyword, groupName, groupId,
+                cardType, reviewOverdue, sortBy, sortOrder);
     }
 
     @GetMapping("/api/card/{id}")

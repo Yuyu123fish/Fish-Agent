@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { marked } from 'marked'
+import { renderMarkdown } from '@/utils/markdown'
+import { relativeTime } from '@/utils/time'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Close, Delete, Edit, Link, Plus, Check, CircleClose } from '@element-plus/icons-vue'
+import { Check, CircleClose, Close, Delete, Edit, Link, Plus } from '@element-plus/icons-vue'
 import ChunkCardLinks from '@/components/ChunkCardLinks.vue'
 import {
   addCardRelation,
@@ -20,7 +21,6 @@ import {
 const router = useRouter()
 
 const props = defineProps<{
-  visible: boolean
   cardId?: number | null
 }>()
 
@@ -48,7 +48,7 @@ type LinkItem = {
   similarity?: number
 }
 
-const html = computed(() => (card.value?.content ? (marked.parse(card.value.content) as string) : ''))
+const html = computed(() => renderMarkdown(card.value?.content ?? ''))
 const sourceChunkLinks = computed<LinkItem[]>(() =>
   (card.value?.relatedChunks ?? []).map((chunk) => ({
     key: `${chunk.taskId}:${chunk.chunkIndex}`,
@@ -59,12 +59,29 @@ const sourceChunkLinks = computed<LinkItem[]>(() =>
   }))
 )
 
+const masteryLevel = computed(() => {
+  const info = card.value?.reviewInfo
+  if (!info || info.reviewCount === 0) return 0
+  return Math.min(5, Math.max(1, Math.round((info.easinessFactor * info.repetition) / 2)))
+})
+
+const masteryLabel = computed(() => {
+  const labels = ['尚未复习', '初学', '了解', '中等', '熟练', '精通']
+  return labels[masteryLevel.value] ?? '初学'
+})
+
+const isDue = computed(() => {
+  const nextAt = card.value?.reviewInfo?.nextReviewAt
+  return nextAt ? new Date(nextAt) <= new Date() : false
+})
+
 watch(
-  () => [props.visible, props.cardId] as const,
-  async () => {
-    if (!props.visible || !props.cardId) return
-    currentCardId.value = props.cardId
-    await loadDetail(props.cardId)
+  () => props.cardId,
+  async (id) => {
+    if (!id) return
+    card.value = null  // clear stale content immediately
+    currentCardId.value = id
+    await loadDetail(id)
   },
   { immediate: true }
 )
@@ -90,6 +107,12 @@ function sourceLabel(source?: string): string {
   if (source === 'chat') return '来自对话'
   if (source === 'knowledge') return '来自知识库'
   return '手动创建'
+}
+
+function formatDate(dateStr?: string | null): string {
+  if (!dateStr) return ''
+  const d = new Date(dateStr)
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
 
 async function handleDelete() {
@@ -227,103 +250,137 @@ function openSourceChunk(item: LinkItem) {
 </script>
 
 <template>
-  <Teleport to="body">
-    <Transition name="panel">
-      <div v-if="visible" class="panel-mask" @click="emit('close')">
-        <aside class="detail-panel" @click.stop>
-          <button class="close-btn" title="关闭" @click="emit('close')">
-            <el-icon><Close /></el-icon>
+  <aside class="detail-panel">
+    <button class="close-btn" title="关闭" @click="emit('close')">
+      <el-icon><Close /></el-icon>
+    </button>
+
+    <div v-if="loading" class="loading">加载中…</div>
+    <template v-else-if="card">
+      <header class="panel-head">
+        <span class="type-badge">{{ typeLabel(card.cardType) }}</span>
+        <h2>{{ card.title }}</h2>
+        <div class="source">
+          {{ sourceLabel(card.sourceType) }}
+          <span v-if="card.createdAt"> · 创建于 {{ formatDate(card.createdAt) }}</span>
+        </div>
+      </header>
+
+      <section class="markdown-body content" v-html="html" />
+
+      <section class="kv">
+        <div>
+          <span class="label">分组</span>
+          <span v-if="card.groupPath" class="group-breadcrumb">
+            <span v-for="(segment, idx) in card.groupPath.split(' > ')" :key="idx" class="breadcrumb-segment">
+              <span v-if="idx > 0" class="breadcrumb-sep">&gt;</span>
+              {{ segment }}
+            </span>
+          </span>
+          <span v-else>{{ card.groupName || '未分组' }}</span>
+        </div>
+        <div>
+          <span class="label">状态</span>
+          <span>{{ card.status }}</span>
+        </div>
+      </section>
+
+      <section class="keywords">
+        <el-tag v-for="kw in card.keywords ?? []" :key="kw" size="small" effect="plain">{{ kw }}</el-tag>
+      </section>
+
+      <section v-if="card.reviewInfo && card.reviewInfo.reviewCount > 0" class="review-info">
+        <h3>复习状态</h3>
+        <div class="review-mastery">
+          <span class="label-inline">掌握度</span>
+          <span class="dots">
+            <span v-for="n in 5" :key="n" class="dot" :class="{ filled: n <= masteryLevel }">●</span>
+          </span>
+          <span class="level-text">{{ masteryLabel }}</span>
+        </div>
+        <div class="review-meta">
+          <div class="meta-item">
+            <span class="label">已复习</span>
+            <span>{{ card.reviewInfo.reviewCount }} 次</span>
+          </div>
+          <div class="meta-item">
+            <span class="label">上次复习</span>
+            <span>{{ relativeTime(card.reviewInfo.lastReviewedAt) }}</span>
+          </div>
+          <div class="meta-item" :class="{ urgent: isDue }">
+            <span class="label">下次复习</span>
+            <span>{{ relativeTime(card.reviewInfo.nextReviewAt) }}</span>
+          </div>
+          <div class="meta-item">
+            <span class="label">当前间隔</span>
+            <span>{{ card.reviewInfo.intervalDays }} 天</span>
+          </div>
+        </div>
+      </section>
+      <section v-else class="review-info empty">
+        <h3>复习状态</h3>
+        <p>尚未复习，进入复习模式开始学习</p>
+      </section>
+
+      <section class="relations">
+        <div class="relations-head">
+          <h3>关联卡片</h3>
+          <button class="mini-btn" type="button" @click="openRelationDialog">
+            <el-icon><Plus /></el-icon>
+            添加
           </button>
+        </div>
+        <div v-if="(card.relations ?? []).length === 0" class="empty-rel">暂无关联</div>
+        <div v-for="rel in card.relations ?? []" v-else :key="rel.id" class="rel-item">
+          <div class="rel-head">
+            <button class="rel-title" type="button" @click="switchRelation(rel.cardId)">{{ rel.cardTitle }}</button>
+            <span class="rel-type-badge">{{ typeLabel(rel.cardType) }}</span>
+            <span v-if="rel.reviewStatus" class="review-dot" :class="rel.reviewStatus" />
+          </div>
+          <small>
+            <el-icon><Link /></el-icon>
+            {{ relationLabel(rel.relationType) }} · {{ rel.direction }} · {{ rel.confidence.toFixed(2) }}
+          </small>
+          <button
+            v-if="rel.confidence > 0.9"
+            class="merge-btn"
+            type="button"
+            @click="handleMerge(rel.cardId)"
+          >
+            疑似重复，合并到此卡片
+          </button>
+        </div>
+      </section>
 
-          <div v-if="loading" class="loading">加载中…</div>
-          <template v-else-if="card">
-            <header class="panel-head">
-              <span class="type-badge">{{ typeLabel(card.cardType) }}</span>
-              <h2>{{ card.title }}</h2>
-              <div class="source">{{ sourceLabel(card.sourceType) }}</div>
-            </header>
+      <section v-if="card.sourceType === 'knowledge'" class="source-chunks">
+        <h3>源文档切片</h3>
+        <ChunkCardLinks
+          :items="sourceChunkLinks"
+          empty-text="暂无相似源切片"
+          action-text="查看切片"
+          @open="openSourceChunk"
+        />
+      </section>
 
-            <section class="markdown-body content" v-html="html" />
-
-            <section class="kv">
-              <div>
-                <span class="label">分组</span>
-                <span v-if="card.groupPath" class="group-breadcrumb">
-                  <span v-for="(segment, idx) in card.groupPath.split(' > ')" :key="idx" class="breadcrumb-segment">
-                    <span v-if="idx > 0" class="breadcrumb-sep">&gt;</span>
-                    {{ segment }}
-                  </span>
-                </span>
-                <span v-else>{{ card.groupName || '未分组' }}</span>
-              </div>
-              <div>
-                <span class="label">状态</span>
-                <span>{{ card.status }}</span>
-              </div>
-            </section>
-
-            <section class="keywords">
-              <el-tag v-for="kw in card.keywords ?? []" :key="kw" size="small" effect="plain">{{ kw }}</el-tag>
-            </section>
-
-            <section class="relations">
-              <div class="relations-head">
-                <h3>关联卡片</h3>
-                <button class="mini-btn" type="button" @click="openRelationDialog">
-                  <el-icon><Plus /></el-icon>
-                  添加
-                </button>
-              </div>
-              <div v-if="(card.relations ?? []).length === 0" class="empty-rel">暂无关联</div>
-              <div v-for="rel in card.relations ?? []" v-else :key="rel.id" class="rel-item">
-                <button class="rel-title" type="button" @click="switchRelation(rel.cardId)">{{ rel.cardTitle }}</button>
-                <small>
-                  <el-icon><Link /></el-icon>
-                  {{ relationLabel(rel.relationType) }} · {{ rel.direction }} · {{ rel.confidence.toFixed(2) }}
-                </small>
-                <button
-                  v-if="rel.confidence > 0.9"
-                  class="merge-btn"
-                  type="button"
-                  @click="handleMerge(rel.cardId)"
-                >
-                  疑似重复，合并到此卡片
-                </button>
-              </div>
-            </section>
-
-            <section v-if="card.sourceType === 'knowledge'" class="source-chunks">
-              <h3>源文档切片</h3>
-              <ChunkCardLinks
-                :items="sourceChunkLinks"
-                empty-text="暂无相似源切片"
-                action-text="查看切片"
-                @open="openSourceChunk"
-              />
-            </section>
-
-            <footer class="actions">
-              <button class="ghost-btn" type="button" @click="emit('edit', card)">
-                <el-icon><Edit /></el-icon>
-                编辑
-              </button>
-              <button v-if="card.status === 'pending'" class="confirm-btn" type="button" @click="handleConfirm">
-                <el-icon><Check /></el-icon>
-                确认
-              </button>
-              <button v-if="card.status === 'pending'" class="warn-btn" type="button" @click="handleReject">
-                <el-icon><CircleClose /></el-icon>
-                拒绝
-              </button>
-              <button class="danger-btn" type="button" @click="handleDelete">
-                <el-icon><Delete /></el-icon>
-                删除
-              </button>
-            </footer>
-          </template>
-        </aside>
-      </div>
-    </Transition>
+      <footer class="actions">
+        <button class="ghost-btn" type="button" @click="emit('edit', card)">
+          <el-icon><Edit /></el-icon>
+          编辑
+        </button>
+        <button v-if="card.status === 'pending'" class="confirm-btn" type="button" @click="handleConfirm">
+          <el-icon><Check /></el-icon>
+          确认
+        </button>
+        <button v-if="card.status === 'pending'" class="warn-btn" type="button" @click="handleReject">
+          <el-icon><CircleClose /></el-icon>
+          拒绝
+        </button>
+        <button class="danger-btn" type="button" @click="handleDelete">
+          <el-icon><Delete /></el-icon>
+          删除
+        </button>
+      </footer>
+    </template>
 
     <el-dialog v-model="relationDialogVisible" title="添加关联" width="520px">
       <div class="relation-form">
@@ -350,21 +407,12 @@ function openSourceChunk(item: LinkItem) {
         <button class="primary-btn" type="button" @click="submitRelation">添加</button>
       </template>
     </el-dialog>
-  </Teleport>
+  </aside>
 </template>
 
 <style scoped>
-.panel-mask {
-  position: fixed;
-  inset: 0;
-  z-index: 25;
-  background: rgba(0, 0, 0, 0.3);
-}
-
 .detail-panel {
-  position: absolute;
-  top: 0;
-  right: 0;
+  position: relative;
   width: 420px;
   max-width: 92vw;
   height: 100%;
@@ -373,6 +421,7 @@ function openSourceChunk(item: LinkItem) {
   background: var(--bg-surface);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-lg);
+  flex-shrink: 0;
 }
 
 .close-btn {
@@ -453,6 +502,11 @@ h2 {
   margin-bottom: 4px;
 }
 
+.label-inline {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 .group-breadcrumb {
   display: inline-flex;
   flex-wrap: wrap;
@@ -477,10 +531,73 @@ h2 {
   gap: 8px;
 }
 
-.relations {
-  margin-top: 22px;
+.review-info {
+  margin-top: 18px;
+  padding: 14px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  background: var(--bg-hover);
 }
 
+.review-info h3,
+.relations h3,
+.source-chunks h3 {
+  margin: 0 0 10px;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.review-mastery {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.dots {
+  display: flex;
+  gap: 4px;
+}
+
+.dot {
+  color: var(--text-muted);
+  font-size: 14px;
+}
+
+.dot.filled {
+  color: var(--status-ok);
+}
+
+.level-text,
+.review-info.empty p {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.review-info.empty p {
+  margin: 0;
+}
+
+.review-meta {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--text-primary);
+  font-size: 13px;
+}
+
+.meta-item.urgent {
+  color: var(--status-warning);
+  font-weight: 600;
+}
+
+.relations,
 .source-chunks {
   margin-top: 22px;
 }
@@ -491,18 +608,6 @@ h2 {
   justify-content: space-between;
   gap: 12px;
   margin-bottom: 10px;
-}
-
-.relations h3 {
-  margin: 0 0 10px;
-  color: var(--text-primary);
-  font-size: 15px;
-}
-
-.source-chunks h3 {
-  margin: 0 0 10px;
-  color: var(--text-primary);
-  font-size: 15px;
 }
 
 .relations-head h3 {
@@ -521,22 +626,54 @@ h2 {
 .rel-item {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 6px;
   color: var(--text);
   margin-bottom: 8px;
+}
+
+.rel-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .rel-title {
   padding: 0;
   border: 0;
+  flex: 1;
   color: var(--text-primary);
   background: transparent;
   text-align: left;
   cursor: pointer;
 }
 
-.rel-title:hover {
-  color: var(--text-primary);
+.rel-type-badge {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  background: var(--bg-hover);
+  font-size: 11px;
+}
+
+.review-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.review-dot.mastered {
+  background: var(--status-ok);
+}
+
+.review-dot.learning {
+  background: var(--status-warning);
+}
+
+.review-dot.new {
+  background: var(--text-muted);
 }
 
 .rel-item small {
@@ -573,12 +710,15 @@ h2 {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   margin-top: 24px;
 }
 
 .ghost-btn,
-.danger-btn {
+.danger-btn,
+.confirm-btn,
+.warn-btn {
   height: 34px;
   padding: 0 16px;
   border-radius: var(--radius-sm);
@@ -632,23 +772,19 @@ h2 {
   background: rgba(143, 107, 107, 0.08);
 }
 
-.panel-enter-active,
-.panel-leave-active {
-  transition: opacity 0.3s ease-out;
+@media (max-width: 1199px) {
+  .detail-panel {
+    width: 55%;
+  }
 }
 
-.panel-enter-active .detail-panel,
-.panel-leave-active .detail-panel {
-  transition: transform 0.3s ease-out;
-}
-
-.panel-enter-from,
-.panel-leave-to {
-  opacity: 0;
-}
-
-.panel-enter-from .detail-panel,
-.panel-leave-to .detail-panel {
-  transform: translateX(100%);
+@media (max-width: 767px) {
+  .detail-panel {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    width: 100%;
+    max-width: none;
+  }
 }
 </style>

@@ -4,6 +4,8 @@ export interface CardRelationItem {
   id: number
   cardId: number
   cardTitle: string
+  cardType?: 'concept' | 'topic'
+  reviewStatus?: 'mastered' | 'learning' | 'new' | null
   relationType: string
   confidence: number
   direction: 'incoming' | 'outgoing'
@@ -33,6 +35,7 @@ export interface CardDetail {
   relatedChunks?: RelatedChunkItem[]
   createdAt?: string | null
   updatedAt?: string | null
+  reviewInfo?: ReviewInfo | null
 }
 
 export interface CardListItem {
@@ -46,6 +49,8 @@ export interface CardListItem {
   groupName?: string | null
   groupId?: number | null
   relationCount: number
+  reviewNextAt?: string | null
+  reviewCount: number
   createdAt?: string | null
 }
 
@@ -124,6 +129,52 @@ export interface CardListQuery {
   keyword?: string
   groupName?: string
   groupId?: number | null
+  cardType?: string
+  reviewOverdue?: boolean
+  sortBy?: string
+  sortOrder?: string
+}
+
+export interface ReviewInfo {
+  nextReviewAt: string | null
+  reviewCount: number
+  lastReviewedAt: string | null
+  easinessFactor: number
+  intervalDays: number
+  repetition: number
+}
+
+export interface ReviewCardVO {
+  id: number
+  title: string
+  content: string
+  keywords: string[]
+  cardType: 'concept' | 'topic'
+  groupPath: string | null
+  reviewInfo: ReviewInfo | null
+}
+
+export interface ReviewQueueResponse {
+  cards: ReviewCardVO[]
+  totalDue: number
+  totalNew: number
+}
+
+export interface ReviewAnswerResponse {
+  nextReviewAt: string
+  intervalDays: number
+  easinessFactor: number
+  remainingDue: number
+}
+
+export interface ReviewStatsResponse {
+  totalCards: number
+  mastered: number
+  learning: number
+  dueToday: number
+  streakDays: number
+  reviewCalendar: Record<string, number>
+  weeklyActivity: number[]
 }
 
 async function parseError(r: Response): Promise<string> {
@@ -157,9 +208,38 @@ export async function listCards(query: CardListQuery = {}): Promise<CardPage> {
   if (query.keyword?.trim()) q.set('keyword', query.keyword.trim())
   if (query.groupName && query.groupName !== 'all') q.set('groupName', query.groupName)
   if (query.groupId && query.groupId > 0) q.set('groupId', String(query.groupId))
+  if (query.cardType && query.cardType !== 'all') q.set('cardType', query.cardType)
+  if (query.reviewOverdue) q.set('reviewOverdue', 'true')
+  if (query.sortBy && query.sortBy !== 'default') q.set('sortBy', query.sortBy)
+  if (query.sortOrder) q.set('sortOrder', query.sortOrder)
   const r = await authFetch(`/api/card/list?${q}`)
   if (!r.ok) throw new Error(await parseError(r))
   return (await r.json()) as CardPage
+}
+
+export async function getReviewQueue(groupId?: number): Promise<ReviewQueueResponse> {
+  const q = new URLSearchParams()
+  if (groupId && groupId > 0) q.set('groupId', String(groupId))
+  const suffix = q.toString()
+  const r = await authFetch(`/api/card/review/queue${suffix ? `?${suffix}` : ''}`)
+  if (!r.ok) throw new Error(await parseError(r))
+  return (await r.json()) as ReviewQueueResponse
+}
+
+export async function submitReviewAnswer(cardId: number, quality: number): Promise<ReviewAnswerResponse> {
+  const r = await authFetch('/api/card/review/answer', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cardId, quality })
+  })
+  if (!r.ok) throw new Error(await parseError(r))
+  return (await r.json()) as ReviewAnswerResponse
+}
+
+export async function getReviewStats(): Promise<ReviewStatsResponse> {
+  const r = await authFetch('/api/card/review/stats')
+  if (!r.ok) throw new Error(await parseError(r))
+  return (await r.json()) as ReviewStatsResponse
 }
 
 export async function getCard(id: number): Promise<CardDetail> {

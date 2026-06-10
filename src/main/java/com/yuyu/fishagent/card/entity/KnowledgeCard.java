@@ -60,6 +60,15 @@ public class KnowledgeCard {
     @TableField("group_id")
     private Long groupId;
 
+    @TableField("review_next_at")
+    private LocalDateTime reviewNextAt;
+
+    @TableField("review_count")
+    private Integer reviewCount = 0;
+
+    @TableField("last_reviewed_at")
+    private LocalDateTime lastReviewedAt;
+
     @TableField("created_at")
     private LocalDateTime createdAt;
 
