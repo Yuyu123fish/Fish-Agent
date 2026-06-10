@@ -85,12 +85,16 @@ CREATE TABLE IF NOT EXISTS knowledge_card (
   source_id   VARCHAR(100) COMMENT 'sessionId 或 documentId，NULL 为手动创建',
   status      VARCHAR(20) NOT NULL DEFAULT 'pending' COMMENT 'pending / confirmed / rejected',
   group_name  VARCHAR(100) COMMENT '分组名称（遗留字段，迁移完成后可移除）',
-  group_id    BIGINT COMMENT '关联 card_group.id，替代 group_name',
+  group_id        BIGINT COMMENT '关联 card_group.id，替代 group_name',
+  review_next_at  DATETIME         DEFAULT NULL COMMENT '下次复习到期时间（冗余，方便列表查询筛选）',
+  review_count    INT     NOT NULL DEFAULT 0 COMMENT '累计复习次数',
+  last_reviewed_at DATETIME        DEFAULT NULL COMMENT '上次复习时间',
   created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   INDEX idx_user_status (user_id, status),
   INDEX idx_source (source_type, source_id),
   INDEX idx_user_group_id (user_id, group_id),
+  INDEX idx_user_review_next (user_id, review_next_at),
   CONSTRAINT fk_card_group FOREIGN KEY (group_id) REFERENCES card_group(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -154,3 +158,56 @@ CREATE TABLE IF NOT EXISTS keyword_relation (
   UNIQUE INDEX uk_keyword_rel (from_keyword_id, to_keyword_id, relation_type),
   INDEX idx_to_keyword (to_keyword_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='关键词关系表';
+
+-- ============================================================
+-- 阶段 5.0 - SM-2 间隔重复复习系统
+-- ============================================================
+
+-- 复习记录表：每次复习产生一条记录，SM-2 算法根据历史记录计算下次复习时间
+CREATE TABLE IF NOT EXISTS card_review_record (
+  id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+  card_id          BIGINT       NOT NULL COMMENT '关联 knowledge_card.id',
+  user_id          BIGINT       NOT NULL COMMENT '所属用户',
+  quality          TINYINT      NOT NULL COMMENT '评分 0~5：0=完全忘了, 3=模糊, 5=熟悉',
+  easiness_factor  FLOAT        NOT NULL DEFAULT 2.5 COMMENT 'SM-2 难度因子，初始 2.5，下限 1.3',
+  `interval`       INT          NOT NULL DEFAULT 0 COMMENT '当前间隔天数',
+  repetition       INT          NOT NULL DEFAULT 0 COMMENT '连续正确次数（quality >= 3）',
+  reviewed_at      DATETIME     NOT NULL COMMENT '本次复习时间',
+  next_review_at   DATETIME     NOT NULL COMMENT '下次应复习时间',
+  created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_card_user (card_id, user_id),
+  INDEX idx_user_next (user_id, next_review_at),
+  INDEX idx_user_card_reviewed (user_id, card_id, reviewed_at DESC),
+  CONSTRAINT fk_review_card FOREIGN KEY (card_id) REFERENCES knowledge_card(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='卡片复习记录表（SM-2 间隔重复）';
+
+
+USE fish_agent;
+
+-- 1. knowledge_card 表新增复习相关字段
+ALTER TABLE knowledge_card
+  ADD COLUMN review_next_at   DATETIME  DEFAULT NULL COMMENT '下次复习到期时间（冗余，方便列表查询筛选）' AFTER group_id,
+  ADD COLUMN review_count     INT       NOT NULL DEFAULT 0 COMMENT '累计复习次数' AFTER review_next_at,
+  ADD COLUMN last_reviewed_at DATETIME  DEFAULT NULL COMMENT '上次复习时间' AFTER review_count;
+
+-- 2. 为新增字段加索引
+ALTER TABLE knowledge_card
+  ADD INDEX idx_user_review_next (user_id, review_next_at);
+
+-- 3. 创建复习记录表
+CREATE TABLE IF NOT EXISTS card_review_record (
+  id               BIGINT AUTO_INCREMENT PRIMARY KEY,
+  card_id          BIGINT       NOT NULL COMMENT '关联 knowledge_card.id',
+  user_id          BIGINT       NOT NULL COMMENT '所属用户',
+  quality          TINYINT      NOT NULL COMMENT '评分 0~5：0=完全忘了, 3=模糊, 5=熟悉',
+  easiness_factor  FLOAT        NOT NULL DEFAULT 2.5 COMMENT 'SM-2 难度因子，初始 2.5，下限 1.3',
+  `interval`       INT          NOT NULL DEFAULT 0 COMMENT '当前间隔天数',
+  repetition       INT          NOT NULL DEFAULT 0 COMMENT '连续正确次数（quality >= 3）',
+  reviewed_at      DATETIME     NOT NULL COMMENT '本次复习时间',
+  next_review_at   DATETIME     NOT NULL COMMENT '下次应复习时间',
+  created_at       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_card_user (card_id, user_id),
+  INDEX idx_user_next (user_id, next_review_at),
+  INDEX idx_user_card_reviewed (user_id, card_id, reviewed_at DESC),
+  CONSTRAINT fk_review_card FOREIGN KEY (card_id) REFERENCES knowledge_card(id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='卡片复习记录表（SM-2 间隔重复）';

@@ -21,7 +21,10 @@
       "Bash(xargs grep -l \"com\\\\.yuyu\\\\.fishagent\\\\.service\\\\.\")",
       "Bash(xargs grep -l \"com\\\\.yuyu\\\\.fishagent\\\\.controller\\\\.\")",
       "Bash(xargs grep -l \"com\\\\.yuyu\\\\.fishagent\\\\.dto\\\\.\")",
-      "PowerShell(Get-ChildItem -Path \"D:\\\\1_Backend\\\\Fish-Agent\\\\document\" -Recurse -File | ForEach-Object { $_.FullName.Replace\\(\"D:\\\\1_Backend\\\\Fish-Agent\\\\\", \"\"\\) } | Sort-Object)"
+      "PowerShell(Get-ChildItem -Path \"D:\\\\1_Backend\\\\Fish-Agent\\\\document\" -Recurse -File | ForEach-Object { $_.FullName.Replace\\(\"D:\\\\1_Backend\\\\Fish-Agent\\\\\", \"\"\\) } | Sort-Object)",
+      "Bash(dir *)",
+      "Bash(findstr /i card)",
+      "Bash(findstr card *)"
     ]
   }
 }
