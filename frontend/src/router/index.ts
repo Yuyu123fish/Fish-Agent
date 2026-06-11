@@ -11,7 +11,7 @@ export const router = createRouter({
   routes: [
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
     { path: '/', redirect: '/chat' },
-    { path: '/chat', name: 'chat', component: ChatView },
+    { path: '/chat', name: 'chat', component: ChatView, meta: { keepAlive: true } },
     { path: '/knowledge', name: 'knowledge', component: KnowledgeView },
     { path: '/cards', name: 'cards', component: KnowledgeCardView, meta: { requiresAuth: true } }
   ]

@@ -15,11 +15,13 @@ import KnowledgeUpload from '@/components/KnowledgeUpload.vue'
 import AppHeader from '@/components/AppHeader.vue'
 import DrawerSidebar from '@/components/DrawerSidebar.vue'
 import ChunkDetailPanel from '@/components/ChunkDetailPanel.vue'
+import { useResponsive } from '@/composables/useResponsive'
 
 const router = useRouter()
 const route = useRoute()
 const auth = useAuthStore()
 const { role } = storeToRefs(auth)
+const { isMobile } = useResponsive()
 
 const isAdmin = computed(() => (role.value ?? '').toUpperCase() === 'ADMIN')
 
@@ -126,8 +128,10 @@ function openCardFromChunk(cardId: number) {
 </script>
 
 <template>
-  <DrawerSidebar />
+  <!-- 单根节点：App.vue 的路由 Transition(out-in) 要求视图组件只有一个根元素，否则离开过渡无法完成，页面会卡住无法切换。 -->
+  <div class="kb-view">
   <AppHeader :show-back="true" @back="goChat" />
+  <DrawerSidebar />
   <div class="kb-page">
     <div class="kb-container">
       <header class="kb-header">
@@ -148,7 +152,7 @@ function openCardFromChunk(cardId: number) {
         <el-tab-pane v-if="isAdmin" label="全部文档（管理员）" name="all" />
       </el-tabs>
 
-      <el-table v-loading="loading" :data="records" stripe class="kb-table" empty-text="暂无上传记录">
+      <el-table v-if="!isMobile" v-loading="loading" :data="records" stripe class="kb-table" empty-text="暂无上传记录">
         <el-table-column prop="fileName" label="文件名" min-width="160" show-overflow-tooltip />
         <el-table-column label="大小" width="90">
           <template #default="{ row }">{{ formatSize(row.fileSize) }}</template>
@@ -180,6 +184,27 @@ function openCardFromChunk(cardId: number) {
         </el-table-column>
       </el-table>
 
+      <div v-else v-loading="loading" class="kb-mobile-list">
+        <div v-for="row in records" :key="row.taskId" class="kb-mobile-card">
+          <div class="mobile-card-head">
+            <span class="mobile-filename">{{ row.fileName }}</span>
+            <el-tag :type="statusType(row.status)" size="small">{{ row.status }}</el-tag>
+          </div>
+          <div class="mobile-card-meta">
+            <span>{{ formatSize(row.fileSize) }}</span>
+            <span>{{ row.scopeType }}</span>
+            <span>{{ row.chunkCount ?? '—' }} 切片</span>
+          </div>
+          <div class="mobile-card-actions">
+            <el-button v-if="row.status === 'SUCCESS'" type="primary" link size="small" @click="openChunkDetail(row.taskId)">
+              查看切片
+            </el-button>
+            <el-button type="danger" link size="small" @click="onDelete(row)">删除</el-button>
+          </div>
+        </div>
+        <el-empty v-if="!loading && records.length === 0" description="暂无上传记录" />
+      </div>
+
       <div class="kb-pager">
         <el-pagination
           v-model:current-page="page"
@@ -201,6 +226,7 @@ function openCardFromChunk(cardId: number) {
     @close="closeChunkDetail"
     @open-card="openCardFromChunk"
   />
+  </div>
 </template>
 
 <style scoped>
@@ -310,6 +336,46 @@ function openCardFromChunk(cardId: number) {
   display: flex;
   justify-content: flex-end;
   margin-top: 16px;
+}
+
+.kb-mobile-card {
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  margin-bottom: 10px;
+}
+
+.mobile-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.mobile-filename {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mobile-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.mobile-card-actions {
+  display: flex;
+  gap: 8px;
 }
 
 </style>

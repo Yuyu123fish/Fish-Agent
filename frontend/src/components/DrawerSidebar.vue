@@ -12,7 +12,7 @@ import {
   SwitchButton
 } from '@element-plus/icons-vue'
 import { storeToRefs } from 'pinia'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessageBox } from 'element-plus'
 import { useChatStore } from '@/store/chat'
 import { useAuthStore } from '@/store/auth'
@@ -25,6 +25,7 @@ import { drawFishLogo } from '@/utils/fishLogo'
 import type { SessionInfo } from '@/types/chat'
 
 const router = useRouter()
+const route = useRoute()
 const drawer = useDrawer()
 const { open, closeDrawer } = drawer
 const auth = useAuthStore()
@@ -79,16 +80,25 @@ watch(open, async (isOpen) => {
   renderLogo()
 })
 
+/** 会话操作发生在知识库/卡片等页面时，需要先跳回对话页才能看到效果。 */
+function ensureChatRoute() {
+  if (route.path !== '/chat') {
+    void router.push('/chat')
+  }
+}
+
 function handleSelect(sid: string) {
   if (streaming.value) return
   store.selectSession(sid)
   closeDrawer()
+  ensureChatRoute()
 }
 
 function handleNew() {
   if (streaming.value) return
   store.newSession()
   closeDrawer()
+  ensureChatRoute()
 }
 
 async function handleDelete(sid: string, e: Event) {
@@ -133,9 +143,14 @@ function cancelRename() {
   editTitle.value = ''
 }
 
-/** 仅当前编辑项 blur 时取消，避免切换编辑目标时旧输入框抢状态。 */
+/** 仅当前编辑项 blur 时处理，非空标题自动保存，避免误触导致修改丢失。 */
 function handleEditBlur(sid: string) {
-  if (editingSid.value === sid) cancelRename()
+  if (editingSid.value !== sid) return
+  if (editTitle.value.trim()) {
+    void confirmRename(sid)
+  } else {
+    cancelRename()
+  }
 }
 
 function goKnowledge() {
@@ -183,11 +198,11 @@ async function handleLogout() {
               <el-icon><Plus /></el-icon>
               新会话
             </button>
-            <button class="action-btn" :disabled="streaming" @click="goKnowledge">
+            <button class="action-btn" :class="{ active: route.path === '/knowledge' }" :disabled="streaming" @click="goKnowledge">
               <el-icon><Collection /></el-icon>
               知识库
             </button>
-            <button class="action-btn" :disabled="streaming" @click="goCards">
+            <button class="action-btn" :class="{ active: route.path === '/cards' }" :disabled="streaming" @click="goCards">
               <el-icon><Tickets /></el-icon>
               知识卡片
             </button>
@@ -344,6 +359,11 @@ async function handleLogout() {
   border-color: var(--border-bright);
 }
 
+.action-btn.active {
+  background: var(--bg-active);
+  border-color: var(--border-bright);
+}
+
 .new-chat-btn:disabled,
 .action-btn:disabled,
 .icon-action:disabled {
@@ -443,6 +463,7 @@ async function handleLogout() {
 
 .session-item:hover .icon-action,
 .session-item.editing .icon-action,
+.session-item.active .icon-action,
 .header-user .icon-action {
   opacity: 1;
 }
@@ -454,6 +475,12 @@ async function handleLogout() {
 
 .icon-action.danger:hover:not(:disabled) {
   color: var(--text-primary);
+}
+
+@media (hover: none) {
+  .session-item .icon-action {
+    opacity: 0.6;
+  }
 }
 
 .empty {

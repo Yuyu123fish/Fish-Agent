@@ -255,7 +255,7 @@ function openSourceChunk(item: LinkItem) {
       <el-icon><Close /></el-icon>
     </button>
 
-    <div v-if="loading" class="loading">加载中…</div>
+    <div v-if="loading" v-loading="true" class="loading-placeholder" />
     <template v-else-if="card">
       <header class="panel-head">
         <span class="type-badge">{{ typeLabel(card.cardType) }}</span>
@@ -442,10 +442,9 @@ function openSourceChunk(item: LinkItem) {
   background: var(--bg-hover);
 }
 
-.loading {
-  color: var(--text-secondary);
-  padding: 60px 0;
-  text-align: center;
+.loading-placeholder {
+  min-height: 200px;
+  width: 100%;
 }
 
 .panel-head {

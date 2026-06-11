@@ -82,39 +82,37 @@ function renderedPreview(text: string): string {
         @change="handleToggle(card, $event)"
       />
 
-      <template v-if="expandedId !== card.id">
-        <div class="card-body" @click="emit('expand', card.id)">
-          <div class="card-head">
-            <span class="status-dot" />
-            <h3>{{ card.title }}</h3>
-            <span class="type-badge">{{ typeLabel(card.cardType) }}</span>
-          </div>
-          <p class="preview">{{ preview(card.contentPreview) }}</p>
-          <div class="keywords">
-            <el-tag
-              v-for="kw in visibleKeywords(card)"
-              :key="kw"
-              size="small"
-              effect="plain"
-              @click.stop="emit('keywordClick', kw)"
-            >
-              {{ kw }}
-            </el-tag>
-          </div>
-          <div class="meta-row">
-            <span v-if="card.groupName" class="group">{{ card.groupName }}</span>
-            <span v-else class="group muted">未分组</span>
-            <span>{{ card.relationCount }} 关联</span>
-            <span class="time">{{ relativePastTime(card.createdAt) }}</span>
-          </div>
-          <div class="review-hint" :class="{ urgent: isReviewDue(card.reviewNextAt) }">
-            {{ reviewHintText(card.reviewNextAt) }}
-          </div>
+      <div class="card-body" @click="emit('expand', card.id)">
+        <div class="card-head">
+          <span class="status-dot" />
+          <h3>{{ card.title }}</h3>
+          <span class="type-badge">{{ typeLabel(card.cardType) }}</span>
         </div>
-      </template>
+        <p class="preview">{{ preview(card.contentPreview) }}</p>
+        <div class="keywords">
+          <el-tag
+            v-for="kw in visibleKeywords(card)"
+            :key="kw"
+            size="small"
+            effect="plain"
+            @click.stop="emit('keywordClick', kw)"
+          >
+            {{ kw }}
+          </el-tag>
+        </div>
+        <div class="meta-row">
+          <span v-if="card.groupName" class="group">{{ card.groupName }}</span>
+          <span v-else class="group muted">未分组</span>
+          <span>{{ card.relationCount }} 关联</span>
+          <span class="time">{{ relativePastTime(card.createdAt) }}</span>
+        </div>
+        <div class="review-hint" :class="{ urgent: isReviewDue(card.reviewNextAt) }">
+          {{ reviewHintText(card.reviewNextAt) }}
+        </div>
+      </div>
 
-      <template v-else>
-        <div class="card-expanded">
+      <Transition name="collapse">
+        <div v-if="expandedId === card.id" class="card-expanded">
           <div class="card-head">
             <span class="status-dot" />
             <h3 class="clickable" @click="emit('select', card)">{{ card.title }}</h3>
@@ -150,7 +148,7 @@ function renderedPreview(text: string): string {
             <button class="danger-btn" type="button" @click.stop="emit('action', card.id, 'delete')">删除</button>
           </div>
         </div>
-      </template>
+      </Transition>
     </article>
   </div>
 </template>
@@ -174,8 +172,7 @@ function renderedPreview(text: string): string {
   transition: transform var(--transition-fast), border-color var(--transition-fast), box-shadow var(--transition-fast);
 }
 
-.card-body,
-.card-expanded {
+.card-body {
   padding: 16px;
   display: flex;
   flex: 1;
@@ -213,7 +210,26 @@ function renderedPreview(text: string): string {
 }
 
 .k-card.expanded {
-  grid-column: 1 / -1;
+  z-index: 5;
+  min-height: 190px;
+}
+
+.card-expanded {
+  position: absolute;
+  top: 100%;
+  left: -8px;
+  right: -8px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: 420px;
+  padding: 16px;
+  overflow-y: auto;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
 }
 
 @keyframes review-pulse {

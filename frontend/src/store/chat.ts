@@ -196,12 +196,13 @@ export const useChatStore = defineStore('chat', () => {
     streaming.value = false
   }
 
-  /** 组件卸载时调用：仅释放网络资源，不修改 UI 状态 */
+  /** 组件卸载/停用时调用：释放网络资源并重置流式状态，避免 UI 锁死。 */
   function cleanup(): void {
     if (abortController) {
       abortController.abort()
       abortController = null
     }
+    streaming.value = false
   }
 
   return {

@@ -357,16 +357,16 @@ onBeforeUnmount(stopDrag)
 .resize-handle {
   position: absolute;
   top: 0;
-  right: -3px;
+  right: -5px;
   z-index: 5;
-  width: 6px;
+  width: 10px;
   height: 100%;
   cursor: col-resize;
 }
 
 .resize-handle:hover {
   background: var(--accent);
-  opacity: 0.3;
+  opacity: 0.35;
 }
 
 .dropdown-enter-active,

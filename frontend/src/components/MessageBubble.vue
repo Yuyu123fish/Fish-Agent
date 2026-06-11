@@ -5,6 +5,7 @@ import hljs from 'highlight.js'
 import { ElMessage } from 'element-plus'
 import { Tools, DocumentCopy, Check, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
 import type { ChatMessage } from '@/types/chat'
+import { formatRelativeTime } from '@/utils/time'
 
 const props = defineProps<{
   msg: ChatMessage
@@ -24,7 +25,7 @@ renderer.code = ({ text, lang }: { text: string; lang?: string }) => {
   const language = lang && hljs.getLanguage(lang) ? lang : 'plaintext'
   const out = hljs.highlight(text, { language }).value
   const label = language !== 'plaintext' ? language : ''
-  return `<div class="code-block"><div class="code-header"><span class="code-lang">${label}</span></div><pre><code class="hljs language-${language}">${out}</code></pre></div>`
+  return `<div class="code-block"><div class="code-header"><span class="code-lang">${label}</span><button class="code-copy-btn" type="button">复制</button></div><pre><code class="hljs language-${language}">${out}</code></pre></div>`
 }
 
 const isUser = computed(() => props.msg.role === 'user')
@@ -79,6 +80,25 @@ async function copy() {
     ElMessage.warning('复制失败：浏览器剪贴板不可用')
   }
 }
+
+/**
+ * v-html 渲染出的代码块无法绑定 Vue 事件，使用事件委托处理单块复制。
+ */
+function handleMarkdownClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (!target.classList.contains('code-copy-btn')) return
+  const codeBlock = target.closest('.code-block')
+  const code = codeBlock?.querySelector('code')
+  if (!code) return
+  navigator.clipboard.writeText(code.textContent || '').then(() => {
+    target.textContent = '✓'
+    setTimeout(() => {
+      target.textContent = '复制'
+    }, 1500)
+  }).catch(() => {
+    ElMessage.warning('复制失败')
+  })
+}
 </script>
 
 <template>
@@ -98,7 +118,9 @@ async function copy() {
                 <ArrowUp v-else />
               </el-icon>
             </div>
-            <div v-if="toolExpanded && toolPayload" class="tool-payload">{{ toolPayload }}</div>
+            <Transition name="collapse">
+              <div v-if="toolExpanded && toolPayload" class="tool-payload">{{ toolPayload }}</div>
+            </Transition>
           </div>
         </div>
       </template>
@@ -113,6 +135,7 @@ async function copy() {
           class="markdown-body"
           :class="{ streaming: showCursor }"
           v-html="html"
+          @click="handleMarkdownClick"
         />
         <div v-else class="placeholder">
           <span class="dot" />
@@ -134,6 +157,13 @@ async function copy() {
           <DocumentCopy v-else />
         </el-icon>
       </button>
+      <time
+        v-if="msg.createdAt"
+        class="msg-time"
+        :datetime="new Date(msg.createdAt).toISOString()"
+      >
+        {{ formatRelativeTime(msg.createdAt) }}
+      </time>
     </div>
   </div>
 </template>
@@ -206,6 +236,25 @@ async function copy() {
   font-family: 'JetBrains Mono', Consolas, monospace;
   text-transform: uppercase;
   letter-spacing: 0.5px;
+}
+
+:deep(.code-copy-btn) {
+  margin-left: auto;
+  padding: 0 8px;
+  height: 22px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+
+:deep(.code-copy-btn:hover) {
+  color: var(--text-primary);
+  border-color: var(--border-bright);
 }
 
 .tool-card {
@@ -360,5 +409,38 @@ async function copy() {
   color: var(--status-ok);
   background: rgba(107, 143, 113, 0.1);
   border-color: rgba(107, 143, 113, 0.25);
+}
+
+.msg-time {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 11px;
+  text-align: right;
+  user-select: none;
+}
+
+.bubble.user .msg-time {
+  text-align: left;
+}
+
+.collapse-enter-active,
+.collapse-leave-active {
+  transition: max-height 0.25s ease, opacity 0.25s ease, margin-top 0.25s ease;
+  overflow: hidden;
+}
+
+.collapse-enter-from,
+.collapse-leave-to {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+}
+
+.collapse-enter-to,
+.collapse-leave-from {
+  max-height: 260px;
+  opacity: 1;
+  margin-top: 8px;
 }
 </style>

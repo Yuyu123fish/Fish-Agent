@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onDeactivated, onUnmounted, ref, watch } from 'vue'
 import { useChatStore } from '@/store/chat'
 import { ElMessage } from 'element-plus'
 import { Tickets } from '@element-plus/icons-vue'
@@ -9,6 +9,8 @@ import MessageList from '@/components/MessageList.vue'
 import ChatInput from '@/components/ChatInput.vue'
 import CardExtractPreview from '@/components/CardExtractPreview.vue'
 import { extractCards, type ExtractResult } from '@/api/card'
+
+defineOptions({ name: 'ChatView' })
 
 const store = useChatStore()
 const extracting = ref(false)
@@ -55,6 +57,10 @@ function handlePreviewConfirmed() {
   previewVisible.value = false
   ElMessage.success('知识卡片已确认，可在知识卡片页查看')
 }
+
+onDeactivated(() => {
+  store.cleanup()
+})
 
 onUnmounted(() => {
   store.cleanup()
@@ -138,14 +144,15 @@ onUnmounted(() => {
 }
 
 .extract-btn {
-  padding: 0 14px;
-  border: 1px solid var(--border);
+  padding: 0 16px;
+  border: 1px solid var(--border-bright);
   color: var(--text-primary);
-  background: var(--bg-elevated);
+  background: var(--bg-surface);
+  font-weight: 500;
 }
 
 .extract-btn:hover:not(:disabled) {
-  border-color: var(--border-bright);
+  border-color: var(--accent);
   background: var(--bg-hover);
 }
 

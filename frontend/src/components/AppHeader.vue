@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { Menu, Collection, SwitchButton, ArrowLeft, Moon, Sunny, Tickets } from '@element-plus/icons-vue'
 import { useAuthStore } from '@/store/auth'
@@ -19,6 +19,7 @@ const emit = defineEmits<{
 }>()
 
 const router = useRouter()
+const route = useRoute()
 const { openDrawer } = useDrawer()
 const { dark, toggle } = useTheme()
 const auth = useAuthStore()
@@ -69,10 +70,10 @@ function goCards() {
       </div>
     </div>
     <div class="right">
-      <button class="icon-btn" title="知识库" @click="goKnowledge">
+      <button class="icon-btn" :class="{ active: route.path === '/knowledge' }" title="知识库" @click="goKnowledge">
         <el-icon :size="16"><Collection /></el-icon>
       </button>
-      <button class="icon-btn" title="知识卡片" @click="goCards">
+      <button class="icon-btn" :class="{ active: route.path === '/cards' }" title="知识卡片" @click="goCards">
         <el-icon :size="16"><Tickets /></el-icon>
       </button>
       <button class="icon-btn theme-toggle" :title="dark ? '切换亮色' : '切换暗色'" @click="toggle">
@@ -129,6 +130,12 @@ function goCards() {
 .icon-btn:hover {
   color: var(--text-primary);
   background: var(--bg-hover);
+  border-color: var(--border-bright);
+}
+
+.icon-btn.active {
+  color: var(--text-primary);
+  background: var(--bg-active);
   border-color: var(--border-bright);
 }
 

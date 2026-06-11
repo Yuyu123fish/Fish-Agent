@@ -310,6 +310,8 @@ function openCardFromRoute() {
 </script>
 
 <template>
+  <!-- 单根节点：App.vue 的路由 Transition(out-in) 要求视图组件只有一个根元素，否则离开过渡无法完成，页面会卡住无法切换。 -->
+  <div class="cards-view">
   <AppHeader :show-back="true" @back="goChat" />
   <DrawerSidebar />
 
@@ -376,10 +378,6 @@ function openCardFromRoute() {
               @keyup.enter="resetAndLoad"
               @clear="resetAndLoad"
             />
-            <button class="primary-btn" type="button" @click="openCreate">
-              <el-icon><Plus /></el-icon>
-              创建
-            </button>
             <div class="view-switch">
               <button type="button" class="view-btn" :class="{ active: viewMode === 'grid' }" @click="viewMode = 'grid'">☐ 卡片</button>
               <button type="button" class="view-btn" :class="{ active: viewMode === 'graph' }" @click="viewMode = 'graph'">◉ 图谱</button>
@@ -486,14 +484,16 @@ function openCardFromRoute() {
         </template>
       </section>
 
-      <CardDetailPanel
-        v-if="detailVisible"
-        :key="detailRefreshKey"
-        :card-id="selectedCardId"
-        @close="detailVisible = false"
-        @edit="openEdit"
-        @deleted="handleDeleted"
-      />
+      <Transition name="detail-panel">
+        <CardDetailPanel
+          v-if="detailVisible"
+          :key="detailRefreshKey"
+          :card-id="selectedCardId"
+          @close="detailVisible = false"
+          @edit="openEdit"
+          @deleted="handleDeleted"
+        />
+      </Transition>
     </div>
   </main>
 
@@ -528,6 +528,7 @@ function openCardFromRoute() {
       <button class="danger-outline danger-text" type="button" @click="batchDelete()">删除选中</button>
     </div>
   </Transition>
+  </div>
 </template>
 
 <style scoped>
@@ -847,7 +848,15 @@ h1 {
   }
 
   .stats-strip {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .stat-item {
+    padding: 8px;
+  }
+
+  .stat-item strong {
+    font-size: 18px;
   }
 
   .toolbar-filters {
@@ -863,6 +872,33 @@ h1 {
 
   .view-switch {
     margin-left: 0;
+  }
+}
+
+/* 桌面端详情面板常驻布局，不播放滑入动画。 */
+@media (min-width: 768px) {
+  .detail-panel-enter-active,
+  .detail-panel-leave-active {
+    transition: none;
+  }
+}
+
+@media (max-width: 767px) {
+  .detail-panel-enter-active,
+  .detail-panel-leave-active {
+    transition: transform 0.3s ease, opacity 0.3s ease;
+  }
+
+  .detail-panel-enter-from,
+  .detail-panel-leave-to {
+    transform: translateX(100%);
+    opacity: 0;
+  }
+
+  .detail-panel-enter-to,
+  .detail-panel-leave-from {
+    transform: translateX(0);
+    opacity: 1;
   }
 }
 </style>

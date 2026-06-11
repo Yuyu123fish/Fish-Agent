@@ -547,3 +547,49 @@ button {
   scrollbar-width: thin;
   scrollbar-color: var(--border-bright) transparent;
 }
+
+/* ============================================================
+   全局过渡动画
+   ============================================================ */
+
+/* 折叠展开 */
+.collapse-enter-active,
+.collapse-leave-active {
+  transition: max-height 0.25s ease, opacity 0.25s ease;
+  overflow: hidden;
+}
+
+.collapse-enter-from,
+.collapse-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+.collapse-enter-to,
+.collapse-leave-from {
+  max-height: 300px;
+  opacity: 1;
+}
+
+/* 从右侧滑入 */
+.slide-right-enter-active,
+.slide-right-leave-active {
+  transition: transform 0.3s ease, opacity 0.3s ease;
+}
+
+.slide-right-enter-from,
+.slide-right-leave-to {
+  transform: translateX(100%);
+  opacity: 0;
+}
+
+/* 淡入淡出 */
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s ease;
+}
+
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}

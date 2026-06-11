@@ -28,6 +28,9 @@ const SMALL_FILE_LIMIT_BYTES = 1 * 1024 * 1024
 const CHUNK_SIZE_BYTES = 5 * 1024 * 1024
 
 const statusLine = ref('')
+const uploadProgress = ref(0)
+const isUploading = ref(false)
+const isProcessing = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 function clearPoll() {
@@ -41,17 +44,20 @@ onUnmounted(() => clearPoll())
 
 async function startPolling(taskId: string) {
   clearPoll()
+  isProcessing.value = true
   statusLine.value = '已提交，等待解析…'
   pollTimer = setInterval(async () => {
     try {
       const s = await knowledgeApi.pollTaskStatus(taskId)
       if (s.status === 'SUCCESS') {
         clearPoll()
+        isProcessing.value = false
         statusLine.value = ''
         ElMessage.success('知识库解析完成')
         emit('ingestSuccess')
       } else if (s.status === 'FAILED') {
         clearPoll()
+        isProcessing.value = false
         statusLine.value = ''
         ElMessage.error(s.errorMsg?.trim() || '解析失败')
       } else if (s.status === 'PROCESSING') {
@@ -61,6 +67,7 @@ async function startPolling(taskId: string) {
       }
     } catch (e) {
       clearPoll()
+      isProcessing.value = false
       statusLine.value = ''
       ElMessage.error(e instanceof Error ? e.message : '查询任务状态失败')
     }
@@ -83,12 +90,14 @@ async function uploadLargeFile(file: File, scope: 'private' | 'public') {
   const totalParts = Math.max(1, Math.ceil(file.size / CHUNK_SIZE_BYTES))
   const parts: knowledgeApi.MultipartPartInfo[] = []
 
+  isUploading.value = true
   try {
     for (let i = 0; i < totalParts; i++) {
       const start = i * CHUNK_SIZE_BYTES
       const end = Math.min(start + CHUNK_SIZE_BYTES, file.size)
       const blob = file.slice(start, end)
       statusLine.value = `上传分片 ${i + 1}/${totalParts}…`
+      uploadProgress.value = Math.round(((i + 1) / totalParts) * 100)
       const { etag } = await knowledgeApi.uploadChunk(
         init.taskId,
         init.uploadId,
@@ -110,6 +119,9 @@ async function uploadLargeFile(file: File, scope: 'private' | 'public') {
       /* ignore */
     }
     throw e
+  } finally {
+    isUploading.value = false
+    uploadProgress.value = 0
   }
 }
 
@@ -122,6 +134,7 @@ async function doUpload(file: File, scope: 'private' | 'public') {
       await uploadLargeFile(file, scope)
     }
   } catch (e) {
+    isProcessing.value = false
     statusLine.value = ''
     ElMessage.error(e instanceof Error ? e.message : '上传失败')
   }
@@ -167,7 +180,17 @@ function onPublicFileChange(uploadFile: UploadFile) {
         <el-button size="small" type="primary" :disabled="disabled" plain> 上传公共知识库 </el-button>
       </el-upload>
     </div>
-    <div v-if="statusLine" class="kb-status">{{ statusLine }}</div>
+    <div v-if="statusLine" class="kb-status">
+      {{ statusLine }}
+      <el-progress
+        v-if="isUploading"
+        :percentage="uploadProgress"
+        :stroke-width="4"
+        :show-text="false"
+        style="margin-top: 6px"
+      />
+      <div v-if="isProcessing && !isUploading" class="processing-bar" />
+    </div>
   </div>
 </template>
 
@@ -189,6 +212,34 @@ function onPublicFileChange(uploadFile: UploadFile) {
   color: var(--text-secondary);
   margin-top: 6px;
   min-height: 16px;
+}
+
+.processing-bar {
+  height: 3px;
+  margin-top: 6px;
+  overflow: hidden;
+  border-radius: 2px;
+  background: var(--border-bright);
+}
+
+.processing-bar::after {
+  content: '';
+  display: block;
+  width: 30%;
+  height: 100%;
+  border-radius: 2px;
+  background: var(--text-secondary);
+  animation: processing-slide 1.5s ease-in-out infinite;
+}
+
+@keyframes processing-slide {
+  0% {
+    transform: translateX(-100%);
+  }
+
+  100% {
+    transform: translateX(400%);
+  }
 }
 
 :deep(.el-button--primary.is-plain.is-disabled),
