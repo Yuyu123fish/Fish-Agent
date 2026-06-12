@@ -2,6 +2,7 @@ package com.yuyu.fishagent.rag.pipeline.recall;
 
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
 import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
+import com.yuyu.fishagent.common.util.TokenEstimator;
 import com.yuyu.fishagent.rag.pipeline.fusion.RagScoreFusion;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.auth.context.UserContext;
@@ -59,6 +60,14 @@ public final class RagRecall {
          */
         default Optional<String> buildAugmentation(String sessionId, String rawUserInput, String contextHint) {
             return buildAugmentation(sessionId, rawUserInput);
+        }
+
+        /**
+         * 带 token 预算的增强。默认忽略预算，委托给上下文版本，保持现有实现兼容。
+         */
+        default Optional<String> buildAugmentation(String sessionId, String rawUserInput,
+                                                   String contextHint, int tokenBudget) {
+            return buildAugmentation(sessionId, rawUserInput, contextHint);
         }
     }
 
@@ -162,15 +171,22 @@ public final class RagRecall {
 
         @Override
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput) {
-            return doBuildAugmentation(sessionId, rawUserInput, null);
+            return doBuildAugmentation(sessionId, rawUserInput, null, 0);
         }
 
         @Override
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput, String contextHint) {
-            return doBuildAugmentation(sessionId, rawUserInput, contextHint);
+            return doBuildAugmentation(sessionId, rawUserInput, contextHint, 0);
         }
 
-        private Optional<String> doBuildAugmentation(String sessionId, String rawUserInput, String contextHint) {
+        @Override
+        public Optional<String> buildAugmentation(String sessionId, String rawUserInput,
+                                                  String contextHint, int tokenBudget) {
+            return doBuildAugmentation(sessionId, rawUserInput, contextHint, tokenBudget);
+        }
+
+        private Optional<String> doBuildAugmentation(String sessionId, String rawUserInput,
+                                                     String contextHint, int tokenBudget) {
             if (!ragProperties.isEnabled()) {
                 return Optional.empty();
             }
@@ -341,7 +357,7 @@ public final class RagRecall {
                 return Optional.empty();
             }
 
-            String block = renderBlock(finalHits);
+            String block = tokenBudget > 0 ? renderBlock(finalHits, tokenBudget) : renderBlock(finalHits);
             trace.setRerankTopScore(finalHits.get(0).score());
             trace.setRerankLowestScore(finalHits.get(finalHits.size() - 1).score());
             trace.setInjectedFactCount(finalHits.size());
@@ -404,14 +420,39 @@ public final class RagRecall {
         }
 
         private String renderBlock(List<RecallHit> merged) {
-            // 避免模型对用户复述「长期记忆/片段/检索」等元话术；事实条仍编号便于模型对照。
-            String header = """
-                    【内部参考】以下为可能与当前对话相关的已知事实（仅使用其中已列内容，勿编造）。
-                    回复用户时请自然承接，勿提及「记忆」「片段」「检索」「上下文」「系统提示」「根据上面/本段」或交代信息来源。
-                    可确认的事实：
-                    """;
             int maxChars = Math.max(200, ragProperties.getRender().getMaxInjectedChars());
-            StringBuilder sb = new StringBuilder(header);
+            return renderBlockByChars(merged, maxChars);
+        }
+
+        /**
+         * Render RAG facts within a fact-line token budget.
+         * <p>
+         * The fixed instruction header is not charged to the budget so small
+         * budgets can still include at least one concise fact when possible.
+         * </p>
+         */
+        static String renderBlock(List<RecallHit> merged, int tokenBudget) {
+            if (tokenBudget <= 0) {
+                return renderBlockByChars(merged, 4_000);
+            }
+            StringBuilder sb = new StringBuilder(ragHeader());
+            int usedTokens = 0;
+            int n = 1;
+            for (RecallHit h : merged) {
+                String line = n + ". " + h.content().replace("\r\n", "\n").replace("\n", " ") + "\n";
+                int lineTokens = TokenEstimator.estimate(line);
+                if (usedTokens + lineTokens > tokenBudget) {
+                    break;
+                }
+                usedTokens += lineTokens;
+                sb.append(line);
+                n++;
+            }
+            return sb.toString().trim();
+        }
+
+        private static String renderBlockByChars(List<RecallHit> merged, int maxChars) {
+            StringBuilder sb = new StringBuilder(ragHeader());
             int n = 1;
             for (RecallHit h : merged) {
                 String line = n + ". " + h.content().replace("\r\n", "\n").replace("\n", " ") + "\n";
@@ -422,6 +463,15 @@ public final class RagRecall {
                 n++;
             }
             return sb.toString().trim();
+        }
+
+        private static String ragHeader() {
+            // 避免模型对用户复述「长期记忆/片段/检索」等元话术；事实条仍编号便于模型对照。
+            return """
+                    【内部参考】以下为可能与当前对话相关的已知事实（仅使用其中已列内容，勿编造）。
+                    回复用户时请自然承接，勿提及「记忆」「片段」「检索」「上下文」「系统提示」「根据上面/本段」或交代信息来源。
+                    可确认的事实：
+                    """;
         }
     }
 }

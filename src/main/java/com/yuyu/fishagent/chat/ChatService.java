@@ -6,8 +6,14 @@ import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.yuyu.fishagent.agent.ChatAgent;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
+import com.yuyu.fishagent.chat.budget.BudgetPlan;
+import com.yuyu.fishagent.chat.budget.BudgetRequest;
+import com.yuyu.fishagent.chat.budget.ContextBudgetAllocator;
+import com.yuyu.fishagent.chat.budget.ContextWindowTrimmer;
 import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
+import com.yuyu.fishagent.common.util.TokenEstimator;
+import com.yuyu.fishagent.llm.config.FishLlmProperties;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
 import com.yuyu.fishagent.memory.shortterm.StructuredSummary;
@@ -35,6 +41,7 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
@@ -44,6 +51,7 @@ import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -101,6 +109,10 @@ public class ChatService {
     private final AgentStateUpdater agentStateUpdater;
     /** 用于把结构化压缩输出中的 agent_state 节点转为强类型状态。 */
     private final ObjectMapper objectMapper;
+    /** 对话模型上下文窗口和预算相关配置。 */
+    private final FishLlmProperties fishLlmProperties;
+    /** 用于解析当前 provider 对应的模型名，匹配模型窗口覆盖配置。 */
+    private final Environment environment;
 
     /**
      * 列出所有已持久化的会话。
@@ -298,77 +310,112 @@ public class ChatService {
      * @param userInput 本轮用户输入
      */
     private BuildMessagesResult buildMessages(String sid, Long userId, String userInput) {
-        List<Message> messages = new ArrayList<>();
-        // 合并为单条 SystemMessage：Alibaba ReactAgent 还会在内部拼接系统位，多条 SystemMessage 会触发 AgentLlmNode 英文 WARN 且不利于模型解析。
-        StringBuilder systemBlock = new StringBuilder();
-        systemBlock.append(sessionClockAnchorLine());
-
+        String clockLine = sessionClockAnchorLine();
         String instruction = properties.getInstruction() == null ? "" : properties.getInstruction().trim();
-        if (!instruction.isBlank()) {
-            systemBlock.append("\n\n---\n");
-            systemBlock.append(instruction);
-        }
+        String requiredSystemText = instruction.isBlank() ? clockLine : clockLine + "\n\n---\n" + instruction;
 
         // 三级读穿；冷会话才会调用 L3 加载器（运行在当前 Servlet 线程，UserContext 可用）。
         ShortTermMemoryService.ShortTermMemoryLoadResult memoryResult = shortTermMemoryService.loadForTurnWithMetadata(
                 userId, sid, () -> memoryStore.load(sid));
         ShortTermMemorySnapshot snapshot = memoryResult.snapshot();
+
+        String activeModelName = resolveActiveChatModelName();
+        int contextWindowTokens = fishLlmProperties.getEffectiveContextWindowTokens(activeModelName);
+        BudgetPlan budgetPlan = new ContextBudgetAllocator(
+                contextWindowTokens,
+                fishLlmProperties.getOutputReserveTokens(),
+                fishLlmProperties.getSafetyMarginRatio()
+        ).allocate(new BudgetRequest(userInput, requiredSystemText));
+
+        boolean trimmed = budgetPlan.exhausted();
+        // 合并为单条 SystemMessage：Alibaba ReactAgent 还会在内部拼接系统位，多条 SystemMessage 会触发 AgentLlmNode 英文 WARN 且不利于模型解析。
+        StringBuilder systemBlock = new StringBuilder(requiredSystemText);
+
         if (snapshot.structuredSummary() != null) {
-            if (!systemBlock.isEmpty()) {
-                systemBlock.append("\n\n---\n");
+            String summaryBlock = formatStructuredSummaryForContext(snapshot.structuredSummary(), budgetPlan.summaryBudget());
+            if (!summaryBlock.isBlank()) {
+                appendSystemSection(systemBlock, summaryBlock);
+                log.debug("[ChatService] 使用结构化短期记忆 sid={}", sid);
+            } else {
+                trimmed = true;
             }
-            systemBlock.append(formatStructuredSummaryForContext(snapshot.structuredSummary()));
-            log.debug("[ChatService] 使用结构化短期记忆 sid={}", sid);
         }
 
-        if (snapshot.keyExcerpts() != null && !snapshot.keyExcerpts().isEmpty()) {
-            if (!systemBlock.isEmpty()) {
-                systemBlock.append("\n\n");
+        int effectiveExcerpts = countEffectiveExcerpts(snapshot.keyExcerpts());
+        String excerptBlock = formatKeyExcerptsForContext(snapshot.keyExcerpts(), budgetPlan.excerptBudget());
+        if (!excerptBlock.isBlank()) {
+            appendSystemSection(systemBlock, excerptBlock);
+            if (excerptBlockLineCount(excerptBlock) < effectiveExcerpts) {
+                trimmed = true;
             }
-            systemBlock.append("### 关键历史片段\n");
-            for (KeyExcerpt excerpt : snapshot.keyExcerpts()) {
-                if (excerpt.content() == null || excerpt.content().isBlank()) {
-                    continue;
-                }
-                systemBlock.append("- [").append(excerpt.role()).append("] ")
-                        .append(excerpt.content())
-                        .append(excerpt.reason() == null || excerpt.reason().isBlank()
-                                ? "" : "（" + excerpt.reason() + "）")
-                        .append('\n');
-            }
+        } else if (effectiveExcerpts > 0) {
+            trimmed = true;
         }
 
         SessionAgentState agentState = agentStateStore.load(userId, sid);
         if (agentState != null && !"IDLE".equals(agentState.phase())) {
-            if (!systemBlock.isEmpty()) {
-                systemBlock.append("\n\n---\n");
+            String stateBlock = "## 当前会话状态\n" + formatAgentState(agentState);
+            if (budgetPlan.stateBudget() > 0 && TokenEstimator.estimate(stateBlock) <= budgetPlan.stateBudget()) {
+                appendSystemSection(systemBlock, stateBlock);
+            } else {
+                trimmed = true;
             }
-            systemBlock.append("## 当前会话状态\n");
-            systemBlock.append(formatAgentState(agentState));
         }
 
-        Optional<String> rag = longTermRagContextService.buildAugmentation(sid, userInput, extractContextHint(snapshot));
+        Optional<String> rag = budgetPlan.ragBudget() <= 0
+                ? Optional.empty()
+                : longTermRagContextService.buildAugmentation(
+                sid, userInput, extractContextHint(snapshot), budgetPlan.ragBudget());
         if (rag.isPresent() && !rag.get().isBlank()) {
-            if (!systemBlock.isEmpty()) {
-                systemBlock.append("\n\n---\n");
-            }
-            systemBlock.append(rag.get().trim());
+            appendSystemSection(systemBlock, rag.get().trim());
             log.debug("[ChatService] 已注入长期记忆 RAG sid={}, blockLen={}", sid, rag.get().length());
+        } else if (budgetPlan.ragBudget() <= 0) {
+            trimmed = true;
         }
 
+        List<Message> messages = new ArrayList<>();
         messages.add(new SystemMessage(systemBlock.toString()));
 
         List<ChatMessageDTO> contextMessages = snapshot.recentMessages() == null
                 ? List.of() : snapshot.recentMessages();
-        log.debug("[ChatService] 组装模型上下文 sid={}, contextWindowSize={}", sid, contextMessages.size());
-        appendReplayableMessages(messages, contextMessages);
-        return new BuildMessagesResult(messages, memoryResult.compressedOnColdPath());
+        List<ChatMessageDTO> trimmedContextMessages = ContextWindowTrimmer.trimMessagesByBudget(
+                contextMessages, budgetPlan.windowBudget());
+        if (trimmedContextMessages.size() < contextMessages.size()) {
+            trimmed = true;
+        }
+        log.debug("[ChatService] 组装模型上下文 sid={}, contextWindowSize={}, trimmedWindowSize={}",
+                sid, contextMessages.size(), trimmedContextMessages.size());
+        appendReplayableMessages(messages, trimmedContextMessages);
+
+        int totalInputTokens = estimateMessages(messages) + TokenEstimator.estimate(userInput);
+        if (totalInputTokens > budgetPlan.inputBudget()) {
+            log.warn("[ChatService] Token 超预算 sid={}, actual={}, budget={}，降级裁剪",
+                    sid, totalInputTokens, budgetPlan.inputBudget());
+            messages = emergencyTrim(requiredSystemText, userInput, contextMessages, budgetPlan.inputBudget());
+            totalInputTokens = estimateMessages(messages) + TokenEstimator.estimate(userInput);
+            trimmed = true;
+        }
+        log.info("[ChatService] Token 预算 sid={}, model={}, used={}/{}, trimmed={}",
+                sid, activeModelName == null ? "(unknown)" : activeModelName,
+                totalInputTokens, budgetPlan.inputBudget(), trimmed);
+        return new BuildMessagesResult(
+                messages,
+                memoryResult.compressedOnColdPath(),
+                totalInputTokens,
+                budgetPlan.inputBudget(),
+                trimmed
+        );
     }
 
     /**
      * 模型上下文构建结果。布尔标志用于避免冷路径已同步压缩后，onComplete 维护任务再次压缩。
      */
-    private record BuildMessagesResult(List<Message> messages, boolean skipMaintenanceCompression) {
+    private record BuildMessagesResult(
+            List<Message> messages,
+            boolean skipMaintenanceCompression,
+            int totalInputTokens,
+            int inputBudget,
+            boolean trimmed) {
     }
 
     /**
@@ -408,6 +455,119 @@ public class ChatService {
                 default -> { /* tool/system 类型暂不回放，避免污染上下文 */ }
             }
         }
+    }
+
+    /**
+     * 追加一个 system 子段，统一用分隔线隔开动态上下文，便于模型识别段落边界。
+     */
+    private static void appendSystemSection(StringBuilder systemBlock, String section) {
+        if (section == null || section.isBlank()) {
+            return;
+        }
+        if (!systemBlock.isEmpty()) {
+            systemBlock.append("\n\n---\n");
+        }
+        systemBlock.append(section.trim());
+    }
+
+    /**
+     * 二次兜底裁剪：当估算总量仍超预算时，仅保留 P1 系统必需文本、P0 当前输入和尽量多的近期对话。
+     */
+    private List<Message> emergencyTrim(String requiredSystemText, String userInput,
+                                        List<ChatMessageDTO> contextMessages, int inputBudget) {
+        List<Message> messages = new ArrayList<>();
+        messages.add(new SystemMessage(requiredSystemText));
+        int remainingForWindow = inputBudget
+                - TokenEstimator.estimate(requiredSystemText)
+                - TokenEstimator.estimate(userInput);
+        appendReplayableMessages(
+                messages,
+                ContextWindowTrimmer.trimMessagesByBudget(contextMessages, Math.max(0, remainingForWindow))
+        );
+        return messages;
+    }
+
+    private static int estimateMessages(List<Message> messages) {
+        if (messages == null || messages.isEmpty()) {
+            return 0;
+        }
+        return messages.stream()
+                .mapToInt(message -> TokenEstimator.estimate(message.getText()))
+                .sum();
+    }
+
+    /**
+     * 根据当前 provider 读取实际模型名，用于匹配 fish.llm.model-context-overrides。
+     */
+    private String resolveActiveChatModelName() {
+        return switch (fishLlmProperties.getChatProvider()) {
+            case DEEPSEEK -> environment.getProperty("spring.ai.openai.chat.options.model");
+            case OLLAMA -> environment.getProperty("spring.ai.ollama.chat.options.model");
+            case DASHSCOPE -> environment.getProperty("spring.ai.dashscope.chat.options.model");
+        };
+    }
+
+    /**
+     * 在预算内保留最新的关键原文片段，并按原 turnIndex 顺序渲染。
+     */
+    private String formatKeyExcerptsForContext(List<KeyExcerpt> excerpts, int tokenBudget) {
+        if (excerpts == null || excerpts.isEmpty() || tokenBudget <= 0) {
+            return "";
+        }
+        List<KeyExcerpt> newestFirst = excerpts.stream()
+                .filter(excerpt -> excerpt != null
+                        && excerpt.content() != null
+                        && !excerpt.content().isBlank())
+                .sorted(Comparator.comparingInt(KeyExcerpt::turnIndex).reversed())
+                .toList();
+        List<KeyExcerpt> kept = new ArrayList<>();
+        int used = TokenEstimator.estimate("### 关键历史片段\n");
+        for (KeyExcerpt excerpt : newestFirst) {
+            String line = renderKeyExcerptLine(excerpt);
+            int lineTokens = TokenEstimator.estimate(line);
+            if (used + lineTokens > tokenBudget) {
+                break;
+            }
+            used += lineTokens;
+            kept.add(excerpt);
+        }
+        if (kept.isEmpty()) {
+            return "";
+        }
+        kept.sort(Comparator.comparingInt(KeyExcerpt::turnIndex));
+        StringBuilder sb = new StringBuilder("### 关键历史片段\n");
+        kept.forEach(excerpt -> sb.append(renderKeyExcerptLine(excerpt)));
+        return sb.toString();
+    }
+
+    private static String renderKeyExcerptLine(KeyExcerpt excerpt) {
+        return "- [" + excerpt.role() + "] "
+                + excerpt.content()
+                + (excerpt.reason() == null || excerpt.reason().isBlank()
+                ? "" : "（" + excerpt.reason() + "）")
+                + '\n';
+    }
+
+    private static int excerptBlockLineCount(String excerptBlock) {
+        if (excerptBlock == null || excerptBlock.isBlank()) {
+            return 0;
+        }
+        return (int) excerptBlock.lines()
+                .filter(line -> line.startsWith("- ["))
+                .count();
+    }
+
+    /**
+     * 统计 content 非空的有效关键片段数，作为是否触发预算裁剪的基准。
+     * <p>用原始 size 作分母会在存在空内容片段时误报 trimmed；这里只计实际可渲染的条目。</p>
+     */
+    private static int countEffectiveExcerpts(List<KeyExcerpt> excerpts) {
+        if (excerpts == null || excerpts.isEmpty()) {
+            return 0;
+        }
+        return (int) excerpts.stream()
+                .filter(e -> e != null && e.content() != null && !e.content().isBlank())
+                .count();
     }
 
     /**
@@ -468,7 +628,10 @@ public class ChatService {
     /**
      * 将结构化摘要格式化为模型上下文文本。只注入仍在进行或暂停的话题，避免已关闭话题占用窗口。
      */
-    private String formatStructuredSummaryForContext(StructuredSummary summary) {
+    private String formatStructuredSummaryForContext(StructuredSummary summary, int tokenBudget) {
+        if (summary == null || tokenBudget <= 0) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder("## 对话上下文摘要\n");
 
         if (summary.activeTopics() != null && !summary.activeTopics().isEmpty()) {
@@ -481,6 +644,9 @@ public class ChatService {
                         .append("（").append(blankToDefault(topic.status(), "ACTIVE")).append("）：")
                         .append(blankToDefault(topic.summary(), "")).append('\n');
             }
+            if (TokenEstimator.estimate(sb.toString()) > tokenBudget) {
+                return trimTextToBudget(sb.toString(), tokenBudget);
+            }
         }
 
         if (summary.keyEntities() != null && !summary.keyEntities().isEmpty()) {
@@ -491,6 +657,9 @@ public class ChatService {
                             .append(String.join("、", values)).append('\n');
                 }
             });
+            if (TokenEstimator.estimate(sb.toString()) > tokenBudget) {
+                return trimTextToBudget(sb.toString(), tokenBudget);
+            }
         }
 
         if (summary.pendingIntents() != null && !summary.pendingIntents().isEmpty()) {
@@ -499,6 +668,9 @@ public class ChatService {
                 if (intent != null && !intent.isBlank()) {
                     sb.append("- ").append(intent).append('\n');
                 }
+            }
+            if (TokenEstimator.estimate(sb.toString()) > tokenBudget) {
+                return trimTextToBudget(sb.toString(), tokenBudget);
             }
         }
 
@@ -520,7 +692,30 @@ public class ChatService {
                 }
             }
         }
-        return sb.toString();
+        return trimTextToBudget(sb.toString(), tokenBudget);
+    }
+
+    /**
+     * Binary-search by character index to keep token estimation under budget.
+     */
+    private static String trimTextToBudget(String text, int tokenBudget) {
+        if (text == null || text.isBlank() || tokenBudget <= 0) {
+            return "";
+        }
+        if (TokenEstimator.estimate(text) <= tokenBudget) {
+            return text;
+        }
+        int low = 0;
+        int high = text.length();
+        while (low < high) {
+            int mid = (low + high + 1) >>> 1;
+            if (TokenEstimator.estimate(text.substring(0, mid)) <= tokenBudget) {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        return text.substring(0, low).stripTrailing();
     }
 
     /**

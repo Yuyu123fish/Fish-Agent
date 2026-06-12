@@ -58,6 +58,11 @@ spring:
     # 由 FishLlmEnvironmentPostProcessor 根据 fish.llm.chat-provider 补全
     dashscope:
       api-key: ${DASHSCOPE_API_KEY:}
+      # 对话模型名：显式配置以匹配 fish.llm.model-context-overrides（qwen-plus→131072）。
+      # 不配置时走 starter 内置默认，resolveActiveChatModelName 读不到，预算覆盖不生效。
+      chat:
+        options:
+          model: ${DASHSCOPE_CHAT_MODEL:qwen-plus}
       embedding:
         options:
           model: ${DASHSCOPE_EMBEDDING_MODEL:text-embedding-v2}
@@ -153,6 +158,15 @@ fish:
   llm:
     # DASHSCOPE | OLLAMA | DEEPSEEK
     chat-provider: ${FISH_LLM_CHAT_PROVIDER:DEEPSEEK}
+    # Token 预算管理：本地估算输入成本，防止上下文静默超窗
+    context-window-tokens: ${FISH_LLM_CONTEXT_WINDOW_TOKENS:32768}
+    output-reserve-tokens: ${FISH_LLM_OUTPUT_RESERVE_TOKENS:2048}
+    safety-margin-ratio: ${FISH_LLM_SAFETY_MARGIN_RATIO:0.2}
+    model-context-overrides:
+      deepseek-chat: 65536
+      qwen-plus: 131072
+      qwen-turbo: 131072
+      qwen3-235b-a22b: 131072
     # 嵌入（仅 DASHSCOPE / OLLAMA，DeepSeek 不支持）
     embedding:
       provider: ${FISH_LLM_EMBEDDING_PROVIDER:DASHSCOPE}
