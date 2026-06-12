@@ -67,26 +67,26 @@ class ShortTermMemoryServiceTest {
         ShortTermMemorySnapshot result = service.loadForTurn(7L, "sid", List::of);
 
         assertThat(result).isSameAs(l2Snapshot);
-        verify(l1).save("sid", "from-l2", l2Snapshot.recentMessages());
+        verify(l1).save("sid", l2Snapshot);
     }
 
     @Test
-    void loadForTurnRecomputesColdSessionAndPersistsSnapshotWhenHistoryReachesThreshold() {
+    void loadForTurnReturnsRecentWindowForColdSessionAtThresholdWithoutSynchronousCompression() {
         List<ChatMessageDTO> fullHistory = messages(6);
-        ShortTermMemorySnapshot recomputed = new ShortTermMemorySnapshot("new-summary", List.of(msg("assistant", "latest")));
-        when(l1.load("sid")).thenReturn(emptySnapshot(), recomputed);
+        when(l1.load("sid")).thenReturn(emptySnapshot());
         when(l2.load(7L, "sid")).thenReturn(emptySnapshot());
 
         ShortTermMemoryService.ShortTermMemoryLoadResult result =
                 service.loadForTurnWithMetadata(7L, "sid", () -> fullHistory);
 
-        assertThat(result.snapshot()).isSameAs(recomputed);
-        assertThat(result.compressedOnColdPath()).isTrue();
-        ArgumentCaptor<MemoryCompressionRequest> requestCaptor = ArgumentCaptor.forClass(MemoryCompressionRequest.class);
-        verify(compression).compress(requestCaptor.capture());
-        assertThat(requestCaptor.getValue().getSessionId()).isEqualTo("sid");
-        assertThat(requestCaptor.getValue().getChatHistory()).isSameAs(fullHistory);
-        verify(l2).save(7L, "sid", recomputed);
+        assertThat(result.compressedOnColdPath()).isFalse();
+        assertThat(result.snapshot().summary()).isEmpty();
+        assertThat(result.snapshot().recentMessages())
+                .extracting(ChatMessageDTO::getContent)
+                .containsExactly("message-4", "message-5", "message-6");
+        verify(compression, never()).compress(org.mockito.ArgumentMatchers.any(MemoryCompressionRequest.class));
+        verify(l1).save("sid", result.snapshot());
+        verify(l2).save(7L, "sid", result.snapshot());
     }
 
     @Test
@@ -101,7 +101,7 @@ class ShortTermMemoryServiceTest {
         assertThat(result.recentMessages())
                 .extracting(ChatMessageDTO::getContent)
                 .containsExactly("message-2", "message-3", "message-4");
-        verify(l1).save(eq("sid"), eq(""), eq(result.recentMessages()));
+        verify(l1).save("sid", result);
         verify(l2).save(7L, "sid", result);
     }
 
@@ -111,9 +111,10 @@ class ShortTermMemoryServiceTest {
 
         service.appendTurnToL1("sid", msg("user", "u4"), msg("assistant", "a4"));
 
-        ArgumentCaptor<List<ChatMessageDTO>> windowCaptor = ArgumentCaptor.forClass(List.class);
-        verify(l1).save(eq("sid"), eq("summary"), windowCaptor.capture());
-        assertThat(windowCaptor.getValue())
+        ArgumentCaptor<ShortTermMemorySnapshot> snapshotCaptor = ArgumentCaptor.forClass(ShortTermMemorySnapshot.class);
+        verify(l1).save(eq("sid"), snapshotCaptor.capture());
+        assertThat(snapshotCaptor.getValue().summary()).contains("summary");
+        assertThat(snapshotCaptor.getValue().recentMessages())
                 .extracting(ChatMessageDTO::getRole, ChatMessageDTO::getContent)
                 .containsExactly(
                         tuple("user", "message-3"),
@@ -129,12 +130,37 @@ class ShortTermMemoryServiceTest {
     }
 
     @Test
-    void shouldLoadFullHistoryForMaintenanceLoadsWhenSummaryExistsOrWindowApproachesThreshold() {
+    void shouldLoadFullHistoryForMaintenanceLoadsWhenLegacySummaryHasNoCursorOrWindowApproachesThreshold() {
         when(l1.load("with-summary")).thenReturn(new ShortTermMemorySnapshot("summary", List.of()));
         when(l1.load("near-threshold")).thenReturn(new ShortTermMemorySnapshot("", messages(3)));
 
         assertThat(service.shouldLoadFullHistoryForMaintenance("with-summary")).isTrue();
         assertThat(service.shouldLoadFullHistoryForMaintenance("near-threshold")).isTrue();
+    }
+
+    @Test
+    void shouldLoadFullHistoryForMaintenanceUsesCompressedCursorForStructuredSummary() {
+        long cursor = 1_000;
+        ShortTermMemorySnapshot noNewMessages = new ShortTermMemorySnapshot(
+                new StructuredSummary(List.of(new TopicSegment("topic", "ACTIVE", "summary")),
+                        java.util.Map.of(), List.of(), new UserSignals("", "", List.of())),
+                List.of(messageAt("user", "old", 900), messageAt("assistant", "covered", 1_000)),
+                List.of(),
+                1,
+                cursor
+        );
+        ShortTermMemorySnapshot enoughNewMessages = new ShortTermMemorySnapshot(
+                noNewMessages.structuredSummary(),
+                List.of(messageAt("user", "new-1", 1_001), messageAt("assistant", "new-2", 1_002)),
+                List.of(),
+                1,
+                cursor
+        );
+        when(l1.load("no-new")).thenReturn(noNewMessages);
+        when(l1.load("enough-new")).thenReturn(enoughNewMessages);
+
+        assertThat(service.shouldLoadFullHistoryForMaintenance("no-new")).isFalse();
+        assertThat(service.shouldLoadFullHistoryForMaintenance("enough-new")).isTrue();
     }
 
     @Test
@@ -167,5 +193,9 @@ class ShortTermMemoryServiceTest {
 
     private static ChatMessageDTO msg(String role, String content) {
         return ChatMessageDTO.of(role, content);
+    }
+
+    private static ChatMessageDTO messageAt(String role, String content, long createdAt) {
+        return new ChatMessageDTO(role, content, createdAt);
     }
 }

@@ -33,6 +33,14 @@ public final class RagQueryExpand {
     @FunctionalInterface
     public interface SubQueryExpander {
         List<String> expand(String rewrittenQuery);
+
+        /**
+         * 带对话上下文的扩展。默认忽略上下文，委托给单参数版本。
+         * 只有 {@link LlmQueryDecomposer} 需要重写此方法。
+         */
+        default List<String> expand(String rewrittenQuery, String contextHint) {
+            return expand(rewrittenQuery);
+        }
     }
 
     /**
@@ -128,7 +136,7 @@ public final class RagQueryExpand {
         }
 
         @Override
-        public List<String> expand(String rewrittenQuery) {
+        public List<String> expand(String rewrittenQuery, String contextHint) {
             if (rewrittenQuery == null || rewrittenQuery.isBlank()) {
                 return List.of();
             }
@@ -139,18 +147,26 @@ public final class RagQueryExpand {
                 CompletableFuture<String> future = MdcAsync.mdcSupplyAsync(() -> {
                     Prompt prompt = new Prompt(
                             new SystemMessage(RagQueryDecomposePrompt.SYSTEM_INSTRUCTION),
-                            new UserMessage(RagQueryDecomposePrompt.userSegment(original)));
+                            new UserMessage(
+                                    contextHint != null && !contextHint.isBlank()
+                                        ? RagQueryDecomposePrompt.userSegmentWithContext(original, contextHint)
+                                        : RagQueryDecomposePrompt.userSegment(original)));
                     return chatModel.call(prompt).getResult().getOutput().getText();
                 });
                 String raw = future.get(Math.max(1, cfg.getTimeoutMs()), TimeUnit.MILLISECONDS);
                 List<String> result = parseAndValidate(
                         objectMapper, raw, original, cfg.getMinQueryChars(), cfg.getMaxQueryChars(), maxQueries);
-                log.debug("[LlmQueryDecomposer] 原句拆解为 {} 条子查询", result.size());
+                log.debug("[LlmQueryDecomposer] 原句拆解为 {} 条子查询（含上下文）", result.size());
                 return result;
             } catch (Exception e) {
                 log.warn("[LlmQueryDecomposer] 查询分解失败/超时，降级为单条原句: {}", e.getMessage());
                 return List.of(original);
             }
+        }
+
+        @Override
+        public List<String> expand(String rewrittenQuery) {
+            return expand(rewrittenQuery, null);
         }
 
         /**
@@ -173,6 +189,10 @@ public final class RagQueryExpand {
                 }
                 List<String> out = new ArrayList<>();
                 LinkedHashSet<String> seen = new LinkedHashSet<>();
+                // 原句始终排在首位，保证 BM25 精确匹配不丢失
+                if (seen.add(original)) {
+                    out.add(original);
+                }
                 for (JsonNode node : root) {
                     if (!node.isTextual()) {
                         continue;

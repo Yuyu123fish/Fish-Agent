@@ -11,13 +11,19 @@ import java.util.List;
 public interface ShortTermMemoryStore {
 
     /**
-     * 保存某会话的短期摘要和最近消息窗口。
+     * 保存某会话的短期记忆快照。
      *
      * @param sessionId 会话 ID
-     * @param summary 压缩后的短期摘要
-     * @param recentMessages 最近 N 条消息，用于下一轮组装模型上下文
+     * @param snapshot 短期记忆快照
      */
-    void save(String sessionId, String summary, List<ChatMessageDTO> recentMessages);
+    void save(String sessionId, ShortTermMemorySnapshot snapshot);
+
+    /**
+     * 旧签名兼容入口：调用方逐步迁移期间仍可保存纯文本摘要。
+     */
+    default void save(String sessionId, String summary, List<ChatMessageDTO> recentMessages) {
+        save(sessionId, new ShortTermMemorySnapshot(summary, recentMessages));
+    }
 
     /**
      * 读取某会话的短期记忆快照。不存在或存储不可用时应返回空快照。

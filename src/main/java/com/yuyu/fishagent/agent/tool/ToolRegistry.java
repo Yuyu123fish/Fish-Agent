@@ -1,5 +1,7 @@
 package com.yuyu.fishagent.agent.tool;
 
+import com.yuyu.fishagent.agent.config.ToolProperties;
+import com.yuyu.fishagent.common.util.TextTruncator;
 import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.tool.ToolCallback;
@@ -24,11 +26,13 @@ import java.util.List;
 public class ToolRegistry {
 
     private final List<AgentToolProvider> providers;
+    private final ToolProperties toolProperties;
 
     private final List<ToolCallback> callbacks = new ArrayList<>();
 
-    public ToolRegistry(List<AgentToolProvider> providers) {
+    public ToolRegistry(List<AgentToolProvider> providers, ToolProperties toolProperties) {
         this.providers = providers == null ? List.of() : providers;
+        this.toolProperties = toolProperties;
     }
 
     @PostConstruct
@@ -55,6 +59,7 @@ public class ToolRegistry {
                         log.debug("[Tool] 调用工具: {}，输入: {}", toolName, summary);
                         try {
                             String result = original.call(toolInput);
+                            result = governResult(toolName, result);
                             log.debug("[Tool] 工具 {} 完成，返回长度: {} chars",
                                     toolName, result != null ? result.length() : 0);
                             return result;
@@ -87,5 +92,39 @@ public class ToolRegistry {
 
     public int size() {
         return callbacks.size();
+    }
+
+    /**
+     * 统一治理工具返回：智能截断长文本，并对较长结果追加 ReAct 使用提示。
+     */
+    private String governResult(String toolName, String result) {
+        if (result == null) {
+            return null;
+        }
+        int limit = toolProperties.getMaxResultChars(toolName);
+        String hint = "\n\n[提示：以上工具返回内容较长，请先提取关键信息再回答用户，避免在回复中大段复述原始内容。]";
+        boolean shouldAppendHint = toolProperties.getHintThresholdChars() > 0
+                && result.length() > toolProperties.getHintThresholdChars();
+        String governed = result;
+        if (limit > 0 && governed.length() > limit) {
+            int bodyLimit = shouldAppendHint ? Math.max(1, limit - hint.length()) : limit;
+            governed = TextTruncator.truncateWithin(governed, bodyLimit);
+            log.debug("[Tool] {} 结果已截断 limit={}", toolName, limit);
+        }
+        if (shouldAppendHint) {
+            governed = appendWithinLimit(governed, hint, limit);
+        }
+        return governed;
+    }
+
+    private String appendWithinLimit(String value, String suffix, int limit) {
+        if (limit <= 0 || value.length() + suffix.length() <= limit) {
+            return value + suffix;
+        }
+        if (limit <= suffix.length()) {
+            return TextTruncator.truncateWithin(value + suffix, limit);
+        }
+        int bodyLimit = Math.max(1, limit - suffix.length());
+        return TextTruncator.truncateWithin(value, bodyLimit) + suffix;
     }
 }

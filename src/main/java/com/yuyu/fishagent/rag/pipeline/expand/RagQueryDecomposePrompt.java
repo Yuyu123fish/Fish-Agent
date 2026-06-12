@@ -22,4 +22,14 @@ public final class RagQueryDecomposePrompt {
     public static String userSegment(String userMessage) {
         return "用户问题（仅用于生成检索子查询，不要作答）：\n" + userMessage;
     }
+
+    /**
+     * 带对话上下文的用户消息段。上下文仅供 LLM 理解用户意图，不应照搬到子查询中。
+     */
+    public static String userSegmentWithContext(String userMessage, String contextHint) {
+        return "## 对话上下文（仅供理解用户意图，不要照搬）\n"
+             + contextHint + "\n\n"
+             + "## 用户问题（仅用于生成检索子查询，不要作答）\n"
+             + userMessage;
+    }
 }

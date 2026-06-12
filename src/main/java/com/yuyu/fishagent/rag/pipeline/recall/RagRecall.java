@@ -53,6 +53,13 @@ public final class RagRecall {
     /** 供 Chat 层注入：把本轮用户输入转为可插入系统消息的 RAG 文本（若有命中）。 */
     public interface Augmentation {
         Optional<String> buildAugmentation(String sessionId, String rawUserInput);
+
+        /**
+         * 带对话上下文的增强。默认忽略上下文，委托给 2 参数版本。
+         */
+        default Optional<String> buildAugmentation(String sessionId, String rawUserInput, String contextHint) {
+            return buildAugmentation(sessionId, rawUserInput);
+        }
     }
 
     /**
@@ -155,6 +162,15 @@ public final class RagRecall {
 
         @Override
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput) {
+            return doBuildAugmentation(sessionId, rawUserInput, null);
+        }
+
+        @Override
+        public Optional<String> buildAugmentation(String sessionId, String rawUserInput, String contextHint) {
+            return doBuildAugmentation(sessionId, rawUserInput, contextHint);
+        }
+
+        private Optional<String> doBuildAugmentation(String sessionId, String rawUserInput, String contextHint) {
             if (!ragProperties.isEnabled()) {
                 return Optional.empty();
             }
@@ -183,7 +199,7 @@ public final class RagRecall {
             }
 
             // 多查询扩展：无单独配置项，RAG 开启时始终执行
-            List<String> subQueries = subQueryExpander.expand(textForExpandAndVector);
+            List<String> subQueries = subQueryExpander.expand(textForExpandAndVector, contextHint);
             if (subQueries.isEmpty()) {
                 return Optional.empty();
             }

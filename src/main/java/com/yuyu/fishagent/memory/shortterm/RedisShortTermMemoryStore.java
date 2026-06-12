@@ -30,14 +30,13 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
     private final MemoryProperties properties;
 
     /**
-     * 将短期摘要和最近窗口写入 Redis，并统一设置 TTL。
+     * 将完整短期记忆快照写入 Redis，并统一设置 TTL。
      *
      * @param sessionId 会话 ID
-     * @param summary 短期摘要，允许为空
-     * @param recentMessages 最近消息窗口，按时间正序保存
+     * @param snapshot 短期记忆快照
      */
     @Override
-    public void save(String sessionId, String summary, List<ChatMessageDTO> recentMessages) {
+    public void save(String sessionId, ShortTermMemorySnapshot snapshot) {
         // 优雅降级：Redis 不可用时静默跳过，不影响聊天流程
         StringRedisTemplate redisTemplate = redisTemplateProvider.getIfAvailable();
         if (redisTemplate == null) {
@@ -46,15 +45,16 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
         }
 
         try {
-            // 分别存储摘要和消息窗口，并设置统一的 TTL
             Duration ttl = Duration.ofDays(properties.getShortTermTtlDays());
-            String summaryKey = summaryKey(sessionId);
-            String messagesKey = messagesKey(sessionId);
-            redisTemplate.opsForValue().set(summaryKey, summary == null ? "" : summary, ttl);
-            redisTemplate.opsForValue().set(messagesKey, objectMapper.writeValueAsString(recentMessages), ttl);
-            log.debug("[RedisShortTermMemoryStore] 短期记忆写入完成 sid={}, summaryKey={}, messagesKey={}, summaryLen={}, recentMessages={}, ttlDays={}",
-                    sessionId, summaryKey, messagesKey, summary == null ? 0 : summary.length(),
-                    recentMessages == null ? 0 : recentMessages.size(), properties.getShortTermTtlDays());
+            ShortTermMemorySnapshot safeSnapshot = snapshot == null ? empty() : snapshot;
+            redisTemplate.opsForValue().set(snapshotKey(sessionId),
+                    objectMapper.writeValueAsString(safeSnapshot), ttl);
+            log.debug("[RedisShortTermMemoryStore] 短期记忆写入完成 sid={}, hasSummary={}, excerpts={}, recentMessages={}, incCount={}",
+                    sessionId,
+                    safeSnapshot.structuredSummary() != null,
+                    safeSnapshot.keyExcerpts().size(),
+                    safeSnapshot.recentMessages().size(),
+                    safeSnapshot.incrementalCount());
         } catch (Exception e) {
             log.warn("[RedisShortTermMemoryStore] 写入短期记忆失败 sid={}: {}", sessionId, e.getMessage());
         }
@@ -76,18 +76,19 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
         }
 
         try {
-            // 从 Redis 读取摘要和最近消息窗口
-            String summaryKey = summaryKey(sessionId);
-            String messagesKey = messagesKey(sessionId);
-            String summary = redisTemplate.opsForValue().get(summaryKey);
-            String messagesJson = redisTemplate.opsForValue().get(messagesKey);
-            // 反序列化消息列表
-            List<ChatMessageDTO> messages = messagesJson == null || messagesJson.isBlank()
-                    ? List.of()
-                    : objectMapper.readValue(messagesJson, MESSAGE_LIST_TYPE);
-            log.debug("[RedisShortTermMemoryStore] 短期记忆读取完成 sid={}, summaryHit={}, messagesCount={}",
-                    sessionId, summary != null && !summary.isBlank(), messages.size());
-            return new ShortTermMemorySnapshot(summary == null ? "" : summary, messages);
+            String json = redisTemplate.opsForValue().get(snapshotKey(sessionId));
+            if (json != null && !json.isBlank()) {
+                try {
+                    ShortTermMemorySnapshot snapshot = objectMapper.readValue(json, ShortTermMemorySnapshot.class);
+                    log.debug("[RedisShortTermMemoryStore] 新格式短期记忆读取完成 sid={}, hasSummary={}, messagesCount={}",
+                            sessionId, snapshot.structuredSummary() != null, snapshot.recentMessages().size());
+                    return snapshot;
+                } catch (Exception parseException) {
+                    log.warn("[RedisShortTermMemoryStore] 新格式短期记忆解析失败，尝试旧格式 sid={}: {}",
+                            sessionId, parseException.getMessage());
+                }
+            }
+            return loadLegacyFormat(redisTemplate, sessionId);
         } catch (Exception e) {
             log.warn("[RedisShortTermMemoryStore] 读取短期记忆失败 sid={}: {}", sessionId, e.getMessage());
             return new ShortTermMemorySnapshot("", List.of());
@@ -105,6 +106,7 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
             return;
         }
         try {
+            redisTemplate.delete(snapshotKey(sessionId));
             redisTemplate.delete(summaryKey(sessionId));
             redisTemplate.delete(messagesKey(sessionId));
             log.debug("[RedisShortTermMemoryStore] 短期记忆已删除 sid={}", sessionId);
@@ -120,10 +122,32 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
         return properties.getRedisKeyPrefix() + ":short:" + sessionId + ":summary";
     }
 
+    private String snapshotKey(String sessionId) {
+        return properties.getRedisKeyPrefix() + ":short:" + sessionId + ":snapshot";
+    }
+
     /**
      * 生成最近消息窗口 key，和摘要分开存储便于后续独立调整格式。
      */
     private String messagesKey(String sessionId) {
         return properties.getRedisKeyPrefix() + ":short:" + sessionId + ":messages";
+    }
+
+    /**
+     * 兼容旧 Redis 格式：summary 和 messages 分别存储。
+     */
+    private ShortTermMemorySnapshot loadLegacyFormat(StringRedisTemplate redisTemplate, String sessionId) throws Exception {
+        String summary = redisTemplate.opsForValue().get(summaryKey(sessionId));
+        String messagesJson = redisTemplate.opsForValue().get(messagesKey(sessionId));
+        List<ChatMessageDTO> messages = messagesJson == null || messagesJson.isBlank()
+                ? List.of()
+                : objectMapper.readValue(messagesJson, MESSAGE_LIST_TYPE);
+        log.debug("[RedisShortTermMemoryStore] 旧格式短期记忆读取完成 sid={}, summaryHit={}, messagesCount={}",
+                sessionId, summary != null && !summary.isBlank(), messages.size());
+        return new ShortTermMemorySnapshot(summary == null ? "" : summary, messages);
+    }
+
+    private static ShortTermMemorySnapshot empty() {
+        return new ShortTermMemorySnapshot(null, List.of(), List.of(), 0);
     }
 }

@@ -4,6 +4,8 @@ import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.memory.compress.MemoryPromptBuilder;
 import com.yuyu.fishagent.memory.compress.MemoryResponseParser;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryStore;
+import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
+import com.yuyu.fishagent.memory.shortterm.StructuredSummary;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.memory.dto.MemoryCompressionRequest;
 import com.yuyu.fishagent.memory.dto.MemoryCompressionResult;
@@ -99,14 +101,87 @@ public class MemoryCompressionService {
                     sessionId,
                     result.getShortTermSummary() == null ? 0 : result.getShortTermSummary().length(),
                     recentMessages.size());
-            shortTermMemoryStore.save(
-                    sessionId,
+            shortTermMemoryStore.save(sessionId, new ShortTermMemorySnapshot(
                     result.getShortTermSummary(),
-                    recentMessages
-            );
+                    recentMessages,
+                    lastMessageCreatedAt(chatHistory),
+                    chatHistory.size()
+            ));
         } catch (Exception e) {
             log.warn("[MemoryCompressionService] 短期记忆写入失败 sid={}: {}", sessionId, e.getMessage());
         }
+    }
+
+    /**
+     * 结构化压缩：支持增量/校准两种模式。每 3 次增量后触发一次全量校准，降低摘要漂移。
+     *
+     * @param sessionId 会话 ID
+     * @param currentSummary 当前结构化摘要，首次压缩可为空
+     * @param newMessages 窗口外新增消息，增量模式使用
+     * @param fullHistory 全量历史，校准模式和窗口裁剪使用
+     * @param incrementalCount 当前增量次数
+     * @return 模型解析后的结构化压缩结果
+     */
+    public MemoryResponseParser.StructuredCompressionResult compressStructured(
+            String sessionId,
+            StructuredSummary currentSummary,
+            List<ChatMessageDTO> newMessages,
+            List<ChatMessageDTO> fullHistory,
+            int incrementalCount) {
+        if (sessionId == null || sessionId.isBlank()) {
+            throw new IllegalArgumentException("sessionId cannot be empty");
+        }
+        List<ChatMessageDTO> safeFull = fullHistory == null ? List.of() : fullHistory;
+        if (safeFull.isEmpty()) {
+            throw new IllegalArgumentException("fullHistory cannot be empty");
+        }
+
+        boolean calibration = incrementalCount >= 3;
+        Prompt prompt = calibration
+                ? promptBuilder.buildCalibration(safeFull, properties.getShortTermWindowSize())
+                : promptBuilder.buildIncremental(currentSummary,
+                newMessages == null ? List.of() : newMessages,
+                properties.getShortTermWindowSize());
+
+        log.debug("[MemoryCompressionService] 结构化压缩开始 sid={}, mode={}, incCount={}",
+                sessionId, calibration ? "校准" : "增量", incrementalCount);
+        ChatResponse response = chatModel.call(prompt);
+        String output = response.getResult().getOutput().getText();
+        MemoryResponseParser.StructuredCompressionResult result = responseParser.parseStructured(output);
+
+        int newCount = calibration ? 0 : incrementalCount + 1;
+        ShortTermMemorySnapshot snapshot = new ShortTermMemorySnapshot(
+                result.summary(),
+                recentMessages(safeFull, properties.getShortTermWindowSize()),
+                result.keyExcerpts(),
+                newCount,
+                lastMessageCreatedAt(safeFull),
+                safeFull.size()
+        );
+        shortTermMemoryStore.save(sessionId, snapshot);
+        log.debug("[MemoryCompressionService] 结构化压缩完成 sid={}, mode={}, newCount={}, topics={}, excerpts={}",
+                sessionId,
+                calibration ? "校准" : "增量",
+                newCount,
+                result.summary().activeTopics() == null ? 0 : result.summary().activeTopics().size(),
+                result.keyExcerpts() == null ? 0 : result.keyExcerpts().size());
+        return result;
+    }
+
+    /**
+     * 记录压缩覆盖到的最后一条消息时间，作为后续增量维护游标。
+     */
+    static long lastMessageCreatedAt(List<ChatMessageDTO> history) {
+        if (history == null || history.isEmpty()) {
+            return 0;
+        }
+        for (int i = history.size() - 1; i >= 0; i--) {
+            ChatMessageDTO message = history.get(i);
+            if (message != null && message.getCreatedAt() > 0) {
+                return message.getCreatedAt();
+            }
+        }
+        return 0;
     }
 
 }

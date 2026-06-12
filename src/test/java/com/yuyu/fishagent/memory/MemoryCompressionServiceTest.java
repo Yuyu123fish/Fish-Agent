@@ -29,4 +29,15 @@ class MemoryCompressionServiceTest {
 
         assertThat(MemoryCompressionService.recentMessages(history, 0)).isEmpty();
     }
+
+    @Test
+    void lastMessageCreatedAtUsesLastPositiveTimestamp() {
+        List<ChatMessageDTO> history = List.of(
+                new ChatMessageDTO("user", "old", 100),
+                new ChatMessageDTO("assistant", "missing", 0),
+                new ChatMessageDTO("user", "latest", 300)
+        );
+
+        assertThat(MemoryCompressionService.lastMessageCreatedAt(history)).isEqualTo(300);
+    }
 }

@@ -101,6 +101,6 @@ public class FileShortTermSnapshotStore implements ShortTermSnapshotStore {
     }
 
     private static ShortTermMemorySnapshot empty() {
-        return new ShortTermMemorySnapshot("", List.of());
+        return new ShortTermMemorySnapshot(null, List.of(), List.of(), 0);
     }
 }

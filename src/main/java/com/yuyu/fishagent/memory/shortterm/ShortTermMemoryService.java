@@ -3,7 +3,6 @@ package com.yuyu.fishagent.memory.shortterm;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.memory.MemoryCompressionService;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
-import com.yuyu.fishagent.memory.dto.MemoryCompressionRequest;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -15,7 +14,7 @@ import java.util.function.Supplier;
 /**
  * 短期记忆三级协调器：编排 L1(Redis) → L2(对象存储快照) → L3(全量历史) 的读穿与写穿。
  * <ul>
- *   <li>{@link #loadForTurn} 读穿：L1 命中直接用；否则 L2 回填 L1；再否则冷会话读 L3，必要时同步重算摘要。</li>
+ *   <li>{@link #loadForTurn} 读穿：L1 命中直接用；否则 L2 回填 L1；再否则冷会话读 L3 并先降级返回窗口。</li>
  *   <li>{@link #appendTurnToL1} 同步把本轮消息追加进 L1 窗口（保证下一轮热路径可见）。</li>
  *   <li>{@link #refreshSnapshotFromL1} 把 L1 现状拷入 L2 快照（异步调用）。</li>
  *   <li>{@link #clear} 删除 L1 + L2。</li>
@@ -69,7 +68,7 @@ public class ShortTermMemoryService {
         if (properties.getSnapshot().isEnabled()) {
             ShortTermMemorySnapshot l2Snap = safeSnapshot(l2.load(userId, sessionId));
             if (isNonEmpty(l2Snap)) {
-                l1.save(sessionId, safeSummary(l2Snap), safeMessages(l2Snap));
+                l1.save(sessionId, l2Snap);
                 log.debug("[ShortTermMemoryService] L2 命中并回填 L1 sid={}", sessionId);
                 return new ShortTermMemoryLoadResult(l2Snap, false);
             }
@@ -80,28 +79,14 @@ public class ShortTermMemoryService {
             return new ShortTermMemoryLoadResult(empty(), false);
         }
 
-        if (properties.getSnapshot().isRecomputeOnCold()
-                && full.size() >= properties.getSummaryTriggerThreshold()) {
-            try {
-                compression.compress(new MemoryCompressionRequest(sessionId, full));
-                ShortTermMemorySnapshot recomputed = safeSnapshot(l1.load(sessionId));
-                if (properties.getSnapshot().isEnabled() && isNonEmpty(recomputed)) {
-                    l2.save(userId, sessionId, recomputed);
-                }
-                log.debug("[ShortTermMemoryService] 冷会话同步重算完成 sid={}, historySize={}", sessionId, full.size());
-                return new ShortTermMemoryLoadResult(recomputed, true);
-            } catch (Exception e) {
-                log.warn("[ShortTermMemoryService] 冷会话重算失败，降级为窗口 sid={}: {}", sessionId, e.getMessage());
-            }
-        }
-
         List<ChatMessageDTO> window = tail(full, properties.getShortTermWindowSize());
         ShortTermMemorySnapshot snapshot = new ShortTermMemorySnapshot("", window);
-        l1.save(sessionId, "", window);
+        l1.save(sessionId, snapshot);
         if (properties.getSnapshot().isEnabled()) {
             l2.save(userId, sessionId, snapshot);
         }
-        log.debug("[ShortTermMemoryService] 冷会话窗口降级 sid={}, windowSize={}", sessionId, window.size());
+        log.debug("[ShortTermMemoryService] 冷会话窗口降级 sid={}, windowSize={}，异步压缩将在 onComplete 维护任务中触发",
+                sessionId, window.size());
         return new ShortTermMemoryLoadResult(snapshot, false);
     }
 
@@ -117,7 +102,15 @@ public class ShortTermMemoryService {
         if (assistantMsg != null) {
             window.add(assistantMsg);
         }
-        l1.save(sessionId, safeSummary(current), tail(window, properties.getShortTermWindowSize()));
+        ShortTermMemorySnapshot updated = new ShortTermMemorySnapshot(
+                current.structuredSummary(),
+                tail(window, properties.getShortTermWindowSize()),
+                current.keyExcerpts(),
+                current.incrementalCount(),
+                current.lastCompressedAt(),
+                current.lastCompressedMessageCount()
+        );
+        l1.save(sessionId, updated);
     }
 
     /**
@@ -140,11 +133,13 @@ public class ShortTermMemoryService {
      */
     public boolean shouldLoadFullHistoryForMaintenance(String sessionId) {
         ShortTermMemorySnapshot snapshot = safeSnapshot(l1.load(sessionId));
-        if (snapshot.summary() != null && !snapshot.summary().isBlank()) {
-            return true;
+        if (snapshot.structuredSummary() != null) {
+            if (snapshot.lastCompressedAt() <= 0) {
+                return true;
+            }
+            return countMessagesAfter(safeMessages(snapshot), snapshot.lastCompressedAt()) >= maintenanceTriggerSize();
         }
-        int halfThreshold = Math.max(1, properties.getSummaryTriggerThreshold() / 2);
-        return safeMessages(snapshot).size() >= halfThreshold;
+        return safeMessages(snapshot).size() >= maintenanceTriggerSize();
     }
 
     /**
@@ -165,8 +160,15 @@ public class ShortTermMemoryService {
         }
     }
 
+    /**
+     * 获取当前 L1 快照，供异步维护判断增量/校准模式。
+     */
+    public ShortTermMemorySnapshot getCurrentSnapshot(String sessionId) {
+        return safeSnapshot(l1.load(sessionId));
+    }
+
     private static boolean isNonEmpty(ShortTermMemorySnapshot snapshot) {
-        boolean hasSummary = snapshot.summary() != null && !snapshot.summary().isBlank();
+        boolean hasSummary = snapshot.structuredSummary() != null;
         boolean hasWindow = snapshot.recentMessages() != null && !snapshot.recentMessages().isEmpty();
         return hasSummary || hasWindow;
     }
@@ -175,16 +177,24 @@ public class ShortTermMemoryService {
         return snapshot == null ? empty() : snapshot;
     }
 
-    private static String safeSummary(ShortTermMemorySnapshot snapshot) {
-        return snapshot.summary() == null ? "" : snapshot.summary();
-    }
-
     private static List<ChatMessageDTO> safeMessages(ShortTermMemorySnapshot snapshot) {
         return snapshot.recentMessages() == null ? List.of() : snapshot.recentMessages();
     }
 
+    private static long countMessagesAfter(List<ChatMessageDTO> messages, long timestamp) {
+        return messages.stream()
+                .filter(message -> message != null && message.getCreatedAt() > timestamp)
+                .count();
+    }
+
+    private int maintenanceTriggerSize() {
+        int halfThreshold = Math.max(1, properties.getSummaryTriggerThreshold() / 2);
+        int windowSize = Math.max(1, properties.getShortTermWindowSize());
+        return Math.min(halfThreshold, windowSize);
+    }
+
     private static ShortTermMemorySnapshot empty() {
-        return new ShortTermMemorySnapshot("", List.of());
+        return new ShortTermMemorySnapshot(null, List.of(), List.of(), 0);
     }
 
     private static List<ChatMessageDTO> tail(List<ChatMessageDTO> list, int windowSize) {

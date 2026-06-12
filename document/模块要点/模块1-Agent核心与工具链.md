@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]，DashScope 持续故障时返回固定降级提示。**
+基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]**。**工具返回经 `ToolRegistry` 统一治理 [v5.3]：`TextTruncator` 智能截断 + 长结果提示引导模型先提取关键信息，单工具可 override 上限。**
 
 ---
 
@@ -38,6 +38,8 @@ flowchart TB
         TR["ToolRegistry 自动发现"]
         BuiltIn["内置：DateTime / Calculator<br/>WebFetch / FileRead / FileWrite"]
         External["外部：Tavily / Bocha<br/>高德天气 / 高德地理 / Mail"]
+        Govern["ToolRegistry.governResult() [v5.3]<br/>智能截断 + 长结果提示<br/>TextTruncator 边界感知"]
+        Trunc["TextTruncator [v5.3]<br/>段落/句子边界截断<br/>head-tail 压缩预处理"]
     end
 
     CS --> CA --> CB --> BA
@@ -46,6 +48,7 @@ flowchart TB
     BA --> ToolSys
     SPI --> TR
     TR --> BuiltIn & External
+    TR --> Govern --> Trunc
 ```
 
 ---
@@ -165,6 +168,50 @@ private Flux<NodeOutput> fallbackStream() {
 - **`fallbackStream()` 返回单元素 Flux**：用户看到的是一条明确的降级提示，而非错误中断。AgentStatus 仍正常转到 FINISHED
 
 返回 `Flux<NodeOutput>`，上层（ChatService）按需过滤 `StreamingOutput` chunk 推 SSE。
+
+### 4. 工具结果统一治理（v5.3）
+
+`[ToolRegistry.java](../../src/main/java/com/yuyu/fishagent/agent/tool/ToolRegistry.java)` 第 100-129 行：
+
+所有 `ToolCallback.call()` 返回值经过 `governResult(toolName, result)` 统一处理：
+
+```java
+private String governResult(String toolName, String result) {
+    if (result == null) return null;
+    int limit = toolProperties.getMaxResultChars(toolName);
+    boolean shouldAppendHint = toolProperties.getHintThresholdChars() > 0
+            && result.length() > toolProperties.getHintThresholdChars();
+    String governed = result;
+    if (limit > 0 && governed.length() > limit) {
+        int bodyLimit = shouldAppendHint ? Math.max(1, limit - hint.length()) : limit;
+        governed = TextTruncator.truncateWithin(governed, bodyLimit);
+    }
+    if (shouldAppendHint) {
+        governed = appendWithinLimit(governed, hint, limit);
+    }
+    return governed;
+}
+```
+
+**三层防御**：
+1. **`TextTruncator.truncateWithin()`**：智能边界截断（段落 → 句号 → 硬截），保证最终长度含后缀不超限
+2. **ReAct 使用提示**：超过 `hintThresholdChars`（默认 1500）时追加提示，引导模型先提取关键信息
+3. **工具级 override**：`web_fetch: 6000`、`file_read: 8000`、`web_search: 3000`，不同工具不同上限
+
+配置（`fish.tools.*`）：
+
+| 配置 | 默认值 | 说明 |
+|------|--------|------|
+| `max-result-chars` | 4000 | 全局工具返回字符上限 |
+| `hint-threshold-chars` | 1500 | 超过追加提示的阈值 |
+| `overrides.web_fetch` | 6000 | 网页抓取允许更长 |
+| `overrides.file_read` | 8000 | 文件读取允许更长 |
+| `overrides.web_search` | 3000 | 搜索结果更紧凑 |
+
+`[TextTruncator.java](../../src/main/java/com/yuyu/fishagent/common/util/TextTruncator.java)` 提供三种截断模式：
+- `truncate(text, maxLen)`：智能边界截断（段落 → 句号 → 硬截），适合工具结果
+- `truncateWithin(text, maxLen)`：硬预算截断，返回值长度严格不超限
+- `headTailCompress(text, head, tail)`：保留首尾、省略中间，适合压缩模型输入预处理
 
 ---
 
@@ -381,6 +428,55 @@ Agent 本身是无状态的——`ChatAgent` 不持有任何跨请求的会话�
 
 ---
 
+## 最难/最有挑战的事情：三重防死循环的分层设计
+
+### 问题
+
+ReAct Agent 的核心是"思考-行动-观察"循环——模型自主决定调用工具、接收结果、再思考。没有防护的 ReAct 循环可能无限运行：模型反复调用同一个工具（幻觉）、工具返回触发模型再次调用（乒乓效应）、或者模型陷入"我需要更多信息"的死循环。
+
+### 挑战
+
+死循环防护不是简单的"加个计数器"——粗暴的硬终止会导致用户看到错误提示或半截回复，体验很差。真正难的是：**如何让 Agent 自然地停下来，同时保证用户看到的是完整的回复？**
+
+### 解决方案：三层递进，从优雅到强制
+
+```
+第 1 层（优雅）：ModelCallLimitHook
+  → runLimit=10，触达后追加一条 END 指令
+  → 模型收到"到此为止"信号，自然给出总结回复
+  → 用户看到完整回答，无任何报错
+
+第 2 层（硬上限）：recursionLimit
+  → 图节点切换上限 = maxIterations × 4 = 40
+  → 这是兜底：防止 Hook 未生效的极端情况
+  → 触达直接抛异常，Agent 流中断
+
+第 3 层（外部中断）：AgentStatus
+  → 用户点"停止生成"→ AbortController → disposable.dispose()
+  → transitionTo(STOPPED)，不在 Agent 内部
+  → 调用方控制，Agent 无感知
+```
+
+### 为什么不只用一层
+
+| 层 | 触达概率 | 用户体验 | 为什么要这一层 |
+|----|---------|---------|-------------|
+| Hook | 最高（90% 异常由它兜住） | 好（自然结束） | 优雅终止，模型有最后一次机会总结 |
+| recursionLimit | 极低（Hook 失效才到） | 差（异常中断） | 框架层兜底，防止图节点级无限循环 |
+| AgentStatus | 用户主动 | 好（用户预期中断） | 给用户"取消"能力 |
+
+### 关键设计决策
+
+- `recursionLimit = maxIterations × 4`：因为一次 LLM 调用在 graph 内部会产生多个节点（agent → llm → router → tool → llm → ...），所以上限要远大于 LLM 调用次数
+- `ExitBehavior.END` 而非 `THROW`：END 追加指令让模型自然结束，THROW 直接中断会让用户看到空回复
+- Hook 计数在 LLM 调用级别而非节点级别：这样才能精确控制模型调用次数
+
+### 面试回答要点
+
+> "三重防护的分层哲学是'先礼后兵'。第一层 ModelCallLimitHook 是优雅终止——告诉模型'你已经调了 10 次了，到此为止吧'，模型有最后一次机会给出好的总结。第二层 recursionLimit 是框架级硬上限——万一 Hook 没生效（比如 Spring AI Alibaba 内部 bug），图节点切换 40 次后强制终止。第三层是用户侧控制——点'停止'按钮直接 dispose。三者叠加确保无论模型怎么'一根筋'，都能终止且不浪费多余 token。"
+
+---
+
 ## 关联代码路径速查
 
 | 职责 | 路径 |
@@ -394,3 +490,6 @@ Agent 本身是无状态的——`ChatAgent` 不持有任何跨请求的会话�
 | 外部工具 | `agent/tool/external/*.java` |
 | **LLM 熔断器常量 [v5.0]** | `common/resilience/ResilienceConstants.java` |
 | **熔断事件日志 [v5.0]** | `common/resilience/ResilienceConfig.java` |
+| **工具结果治理 [v5.3]** | `agent/tool/ToolRegistry.java`（governResult + appendWithinLimit） |
+| **工具治理配置 [v5.3]** | `agent/config/ToolProperties.java`（fish.tools.max-result-chars / overrides） |
+| **智能文本截断 [v5.3]** | `common/util/TextTruncator.java`（truncate / truncateWithin / headTailCompress） |

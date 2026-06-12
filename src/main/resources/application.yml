@@ -249,6 +249,13 @@ fish:
 
   # ── 外部工具 ───────────────────────────────────────────────
   tools:
+    # 工具结果治理：统一在 ToolRegistry 做智能截断和长结果提示
+    max-result-chars: 4000
+    hint-threshold-chars: 1500
+    overrides:
+      web_fetch: 6000
+      file_read: 8000
+      web_search: 3000
     # Tavily 搜索：https://docs.tavily.com/documentation/api-reference/endpoint/search
     tavily:
       api-key: ${TAVILY_API_KEY:}

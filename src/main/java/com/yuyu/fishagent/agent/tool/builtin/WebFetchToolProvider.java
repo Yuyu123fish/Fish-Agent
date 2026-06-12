@@ -17,12 +17,9 @@ import java.util.function.Function;
 @Component
 public class WebFetchToolProvider implements AgentToolProvider {
 
-    /** 正文长度上限（字符），超长截断防止把 LLM 上下文撑爆。 */
-    private static final int MAX_LEN = 8000;
-
     public record Input(String url) {}
 
-    public record Output(String url, String title, String text, boolean truncated) {}
+    public record Output(String url, String title, String text) {}
 
     @Override
     public String name() {
@@ -33,7 +30,7 @@ public class WebFetchToolProvider implements AgentToolProvider {
     public ToolCallback build() {
         Function<Input, Output> fn = input -> {
             if (input == null || input.url() == null || input.url().isBlank()) {
-                return new Output("", "", "ERROR: url is required", false);
+                return new Output("", "", "ERROR: url is required");
             }
             try {
                 Document doc = Jsoup.connect(input.url())
@@ -42,18 +39,14 @@ public class WebFetchToolProvider implements AgentToolProvider {
                         .get();
                 doc.select("script, style, noscript, iframe").remove();
                 String text = doc.body() == null ? "" : doc.body().text();
-                boolean truncated = text.length() > MAX_LEN;
-                if (truncated) {
-                    text = text.substring(0, MAX_LEN);
-                }
-                return new Output(input.url(), doc.title(), text, truncated);
+                return new Output(input.url(), doc.title(), text);
             } catch (Exception e) {
                 log.warn("web_fetch 抓取失败: {} - {}", input.url(), e.getMessage());
-                return new Output(input.url(), "", "ERROR: " + e.getMessage(), false);
+                return new Output(input.url(), "", "ERROR: " + e.getMessage());
             }
         };
         return FunctionToolCallback.builder(name(), fn)
-                .description("根据 URL 抓取网页正文。返回标题与去除脚本/样式后的纯文本（最大 8000 字符，超出截断）。")
+                .description("根据 URL 抓取网页正文。返回标题与去除脚本/样式后的纯文本，长结果由工具注册中心统一治理。")
                 .inputType(Input.class)
                 .build();
     }

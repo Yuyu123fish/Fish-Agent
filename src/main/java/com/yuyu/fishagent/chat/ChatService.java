@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.chat;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.alibaba.cloud.ai.graph.NodeOutput;
 import com.alibaba.cloud.ai.graph.streaming.StreamingOutput;
 import com.yuyu.fishagent.agent.ChatAgent;
@@ -9,14 +10,22 @@ import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
+import com.yuyu.fishagent.memory.shortterm.StructuredSummary;
+import com.yuyu.fishagent.memory.shortterm.TopicSegment;
+import com.yuyu.fishagent.memory.shortterm.UserSignals;
+import com.yuyu.fishagent.memory.shortterm.KeyExcerpt;
+import com.yuyu.fishagent.memory.agentstate.ActiveTask;
+import com.yuyu.fishagent.memory.agentstate.AgentStateStore;
+import com.yuyu.fishagent.memory.agentstate.AgentStateUpdater;
+import com.yuyu.fishagent.memory.agentstate.SessionAgentState;
 import com.yuyu.fishagent.memory.LongTermMemoryIngestionService;
 import com.yuyu.fishagent.memory.MemoryCompressionService;
+import com.yuyu.fishagent.memory.compress.MemoryResponseParser;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import com.yuyu.fishagent.agent.config.AgentProperties;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.common.ratelimit.RateLimitService;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
-import com.yuyu.fishagent.memory.dto.MemoryCompressionRequest;
 import com.yuyu.fishagent.chat.dto.SessionInfo;
 import com.yuyu.fishagent.common.exception.SessionLockedException;
 import lombok.RequiredArgsConstructor;
@@ -86,6 +95,12 @@ public class ChatService {
     private final RateLimitService rateLimitService;
     /** 会话元数据（MySQL）：侧栏标题等。 */
     private final ChatMetadataService chatMetadataService;
+    /** Agent 过程状态存储，与短期内容记忆解耦。 */
+    private final AgentStateStore agentStateStore;
+    /** Agent 状态规则更新器，负责工具调用记录和 LLM 推断状态合并。 */
+    private final AgentStateUpdater agentStateUpdater;
+    /** 用于把结构化压缩输出中的 agent_state 节点转为强类型状态。 */
+    private final ObjectMapper objectMapper;
 
     /**
      * 列出所有已持久化的会话。
@@ -115,6 +130,7 @@ public class ChatService {
         Long uid = UserContextHolder.currentUserIdOrNull();
         memoryStore.clear(sessionId);
         shortTermMemoryService.clear(uid, sessionId);
+        agentStateStore.clear(uid, sessionId);
     }
 
     /**
@@ -249,6 +265,7 @@ public class ChatService {
                         try {
                             persist(sid, userInput, full);
                             shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
+                            updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
                         } catch (Exception e) {
                             log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
                             // persist 失败不阻塞 emitter 关闭
@@ -296,15 +313,41 @@ public class ChatService {
         ShortTermMemoryService.ShortTermMemoryLoadResult memoryResult = shortTermMemoryService.loadForTurnWithMetadata(
                 userId, sid, () -> memoryStore.load(sid));
         ShortTermMemorySnapshot snapshot = memoryResult.snapshot();
-        if (snapshot.summary() != null && !snapshot.summary().isBlank()) {
+        if (snapshot.structuredSummary() != null) {
             if (!systemBlock.isEmpty()) {
                 systemBlock.append("\n\n---\n");
             }
-            systemBlock.append("以下是此前对话的短期记忆摘要，请作为上下文参考：\n").append(snapshot.summary().trim());
-            log.debug("[ChatService] 使用短期记忆摘要 sid={}, summaryLen={}", sid, snapshot.summary().length());
+            systemBlock.append(formatStructuredSummaryForContext(snapshot.structuredSummary()));
+            log.debug("[ChatService] 使用结构化短期记忆 sid={}", sid);
         }
 
-        Optional<String> rag = longTermRagContextService.buildAugmentation(sid, userInput);
+        if (snapshot.keyExcerpts() != null && !snapshot.keyExcerpts().isEmpty()) {
+            if (!systemBlock.isEmpty()) {
+                systemBlock.append("\n\n");
+            }
+            systemBlock.append("### 关键历史片段\n");
+            for (KeyExcerpt excerpt : snapshot.keyExcerpts()) {
+                if (excerpt.content() == null || excerpt.content().isBlank()) {
+                    continue;
+                }
+                systemBlock.append("- [").append(excerpt.role()).append("] ")
+                        .append(excerpt.content())
+                        .append(excerpt.reason() == null || excerpt.reason().isBlank()
+                                ? "" : "（" + excerpt.reason() + "）")
+                        .append('\n');
+            }
+        }
+
+        SessionAgentState agentState = agentStateStore.load(userId, sid);
+        if (agentState != null && !"IDLE".equals(agentState.phase())) {
+            if (!systemBlock.isEmpty()) {
+                systemBlock.append("\n\n---\n");
+            }
+            systemBlock.append("## 当前会话状态\n");
+            systemBlock.append(formatAgentState(agentState));
+        }
+
+        Optional<String> rag = longTermRagContextService.buildAugmentation(sid, userInput, extractContextHint(snapshot));
         if (rag.isPresent() && !rag.get().isBlank()) {
             if (!systemBlock.isEmpty()) {
                 systemBlock.append("\n\n---\n");
@@ -394,7 +437,21 @@ public class ChatService {
                     if (full.size() >= memoryProperties.getSummaryTriggerThreshold()) {
                         log.debug("[ChatService] 触发异步记忆压缩 sid={}, historySize={}, threshold={}",
                                 sid, full.size(), memoryProperties.getSummaryTriggerThreshold());
-                        memoryCompressionService.compress(new MemoryCompressionRequest(sid, full));
+                        ShortTermMemorySnapshot current = shortTermMemoryService.getCurrentSnapshot(sid);
+                        StructuredSummary currentSummary = current.structuredSummary();
+                        List<ChatMessageDTO> newMessages = currentSummary == null
+                                ? full
+                                : extractNewMessagesAfter(full,
+                                current.lastCompressedMessageCount(),
+                                current.lastCompressedAt());
+                        var compressionResult = memoryCompressionService.compressStructured(
+                                sid,
+                                currentSummary,
+                                newMessages,
+                                full,
+                                current.incrementalCount()
+                        );
+                        mergeAgentStateFromCompression(userId, sid, compressionResult);
                     }
                 } else {
                     log.debug("[ChatService] L1 窗口远低于压缩阈值，跳过 L3 全量读取 sid={}", sid);
@@ -406,6 +463,193 @@ public class ChatService {
                 UserContextHolder.clear();
             }
         }, mdcSnapshot);
+    }
+
+    /**
+     * 将结构化摘要格式化为模型上下文文本。只注入仍在进行或暂停的话题，避免已关闭话题占用窗口。
+     */
+    private String formatStructuredSummaryForContext(StructuredSummary summary) {
+        StringBuilder sb = new StringBuilder("## 对话上下文摘要\n");
+
+        if (summary.activeTopics() != null && !summary.activeTopics().isEmpty()) {
+            sb.append("### 话题\n");
+            for (TopicSegment topic : summary.activeTopics()) {
+                if ("CLOSED".equals(topic.status())) {
+                    continue;
+                }
+                sb.append("- **").append(blankToDefault(topic.topic(), "未命名话题")).append("**")
+                        .append("（").append(blankToDefault(topic.status(), "ACTIVE")).append("）：")
+                        .append(blankToDefault(topic.summary(), "")).append('\n');
+            }
+        }
+
+        if (summary.keyEntities() != null && !summary.keyEntities().isEmpty()) {
+            sb.append("### 关键实体\n");
+            summary.keyEntities().forEach((category, values) -> {
+                if (values != null && !values.isEmpty()) {
+                    sb.append("- ").append(category).append("：")
+                            .append(String.join("、", values)).append('\n');
+                }
+            });
+        }
+
+        if (summary.pendingIntents() != null && !summary.pendingIntents().isEmpty()) {
+            sb.append("### 待办意图\n");
+            for (String intent : summary.pendingIntents()) {
+                if (intent != null && !intent.isBlank()) {
+                    sb.append("- ").append(intent).append('\n');
+                }
+            }
+        }
+
+        UserSignals signals = summary.userSignals();
+        if (signals != null) {
+            boolean hasSignals = (signals.expertise() != null && !signals.expertise().isBlank())
+                    || (signals.communicationStyle() != null && !signals.communicationStyle().isBlank())
+                    || (signals.observedPreferences() != null && !signals.observedPreferences().isEmpty());
+            if (hasSignals) {
+                sb.append("### 用户画像\n");
+                if (signals.expertise() != null && !signals.expertise().isBlank()) {
+                    sb.append("- 专业度：").append(signals.expertise()).append('\n');
+                }
+                if (signals.communicationStyle() != null && !signals.communicationStyle().isBlank()) {
+                    sb.append("- 沟通偏好：").append(signals.communicationStyle()).append('\n');
+                }
+                if (signals.observedPreferences() != null && !signals.observedPreferences().isEmpty()) {
+                    sb.append("- 偏好：").append(String.join("、", signals.observedPreferences())).append('\n');
+                }
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 将 Agent 过程状态格式化为可注入模型上下文的文本。
+     */
+    private String formatAgentState(SessionAgentState state) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("- 阶段：").append(phaseLabel(state.phase())).append('\n');
+
+        if (state.activeTasks() != null && !state.activeTasks().isEmpty()) {
+            sb.append("- 活跃任务：\n");
+            for (ActiveTask task : state.activeTasks()) {
+                sb.append("  - ").append(blankToDefault(task.description(), "未命名任务"))
+                        .append("（").append(blankToDefault(task.status(), "IN_PROGRESS")).append("）");
+                if (task.currentStep() != null && !task.currentStep().isBlank()) {
+                    sb.append("，当前：").append(task.currentStep());
+                }
+                if ("BLOCKED".equals(task.status()) && task.blockedReason() != null && !task.blockedReason().isBlank()) {
+                    sb.append("，阻塞原因：").append(task.blockedReason());
+                }
+                sb.append('\n');
+            }
+        }
+
+        if (state.lastDetectedIntent() != null && !state.lastDetectedIntent().isBlank()) {
+            sb.append("- 上轮意图：").append(state.lastDetectedIntent()).append('\n');
+        }
+
+        if (state.recentTools() != null && !state.recentTools().isEmpty()) {
+            sb.append("- 近期工具调用：");
+            state.recentTools().stream().limit(5).forEach(tool ->
+                    sb.append(tool.toolName()).append('(')
+                            .append(tool.succeeded() ? "成功" : "失败").append(") "));
+            sb.append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String phaseLabel(String phase) {
+        if (phase == null) {
+            return "空闲";
+        }
+        return switch (phase) {
+            case "EXPLORING" -> "探索中";
+            case "EXECUTING" -> "任务执行中";
+            case "REVIEWING" -> "回顾中";
+            default -> "空闲";
+        };
+    }
+
+    /**
+     * 规则驱动地保存本轮 ReAct 工具调用记录。
+     */
+    private void updateAgentStateByRules(Long userId, String sid, List<NodeOutput> nodes) {
+        try {
+            SessionAgentState current = agentStateStore.load(userId, sid);
+            SessionAgentState updated = agentStateUpdater.updateToolRecords(current, nodes);
+            agentStateStore.save(userId, sid, updated);
+        } catch (Exception e) {
+            log.warn("[ChatService] Agent 状态规则更新失败 sid={}: {}", sid, e.getMessage());
+        }
+    }
+
+    /**
+     * 复用结构化压缩中的 agent_state 推断结果，补全任务阶段、意图和活跃任务。
+     */
+    private void mergeAgentStateFromCompression(Long userId, String sid,
+                                                MemoryResponseParser.StructuredCompressionResult compressionResult) {
+        if (compressionResult == null || compressionResult.agentStateNode() == null) {
+            return;
+        }
+        try {
+            SessionAgentState inferred = objectMapper.treeToValue(
+                    compressionResult.agentStateNode(), SessionAgentState.class);
+            SessionAgentState current = agentStateStore.load(userId, sid);
+            SessionAgentState merged = agentStateUpdater.mergeWithInferred(current, inferred);
+            agentStateStore.save(userId, sid, merged);
+            log.debug("[ChatService] Agent 状态已从压缩结果更新 sid={}, phase={}", sid, merged.phase());
+        } catch (Exception e) {
+            log.warn("[ChatService] Agent 状态 LLM 推断解析失败 sid={}: {}", sid, e.getMessage());
+        }
+    }
+
+    /**
+     * 提取上次压缩游标之后的新增消息，避免增量压缩重复消费旧历史。
+     */
+    private List<ChatMessageDTO> extractNewMessagesAfter(List<ChatMessageDTO> full,
+                                                         int lastCompressedMessageCount,
+                                                         long lastCompressedAt) {
+        if (full == null || full.isEmpty()) {
+            return List.of();
+        }
+        if (lastCompressedMessageCount > 0 && lastCompressedMessageCount <= full.size()) {
+            return new ArrayList<>(full.subList(lastCompressedMessageCount, full.size()));
+        }
+        if (lastCompressedAt <= 0) {
+            return full;
+        }
+        return full.stream()
+                .filter(message -> message != null && message.getCreatedAt() > lastCompressedAt)
+                .toList();
+    }
+
+    private static String blankToDefault(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /**
+     * 从短期记忆快照中提取简洁上下文提示，供查询扩展理解用户意图。
+     * 只取活跃话题摘要，控制 ~200 字符以内，避免增加扩展 LLM 调用的 token 消耗。
+     */
+    private String extractContextHint(ShortTermMemorySnapshot snapshot) {
+        if (snapshot == null || snapshot.structuredSummary() == null) {
+            return null;
+        }
+        StructuredSummary summary = snapshot.structuredSummary();
+        if (summary.activeTopics() == null || summary.activeTopics().isEmpty()) {
+            return null;
+        }
+        StringBuilder sb = new StringBuilder();
+        for (TopicSegment topic : summary.activeTopics()) {
+            if ("CLOSED".equals(topic.status())) continue;
+            if (sb.length() > 0) sb.append("；");
+            String name = (topic.topic() == null || topic.topic().isBlank()) ? "未命名" : topic.topic();
+            String text = (topic.summary() == null || topic.summary().isBlank()) ? "" : topic.summary();
+            sb.append(name).append("：").append(text);
+            if (sb.length() > 200) break;
+        }
+        return sb.isEmpty() ? null : sb.toString();
     }
 
     /**
@@ -442,6 +686,11 @@ public class ChatService {
      * </ul>
      */
     private void handleNode(NodeOutput node, SseEmitter emitter, AssistantBuf buf) {
+        if (node == null) {
+            log.debug("[ChatService] node: null");
+            return;
+        }
+        buf.nodes.add(node);
         if (!(node instanceof StreamingOutput so)) {
             log.debug("[ChatService] node: {}", node.getClass().getSimpleName());
             return;
@@ -514,6 +763,7 @@ public class ChatService {
      */
     private static final class AssistantBuf {
         final StringBuilder full = new StringBuilder();
+        final List<NodeOutput> nodes = new ArrayList<>();
         int segStart = 0;
     }
 

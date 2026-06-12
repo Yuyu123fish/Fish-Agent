@@ -46,7 +46,7 @@ public class RustFsShortTermSnapshotStore implements ShortTermSnapshotStore {
             rustFsService.putChatJson(objectKey(sessionId), data);
             log.debug("[RustFsShortTermSnapshotStore] 快照写入完成 sid={}, summaryLen={}, window={}",
                     sessionId,
-                    safeSnapshot.summary() == null ? 0 : safeSnapshot.summary().length(),
+                    safeSnapshot.summary().length(),
                     safeSnapshot.recentMessages() == null ? 0 : safeSnapshot.recentMessages().size());
         } catch (Exception e) {
             log.warn("[RustFsShortTermSnapshotStore] 写入快照失败 sid={}: {}", sessionId, e.getMessage());
@@ -63,7 +63,7 @@ public class RustFsShortTermSnapshotStore implements ShortTermSnapshotStore {
     }
 
     private static ShortTermMemorySnapshot empty() {
-        return new ShortTermMemorySnapshot("", List.of());
+        return new ShortTermMemorySnapshot(null, List.of(), List.of(), 0);
     }
 
     private static String objectKey(String sessionId) {

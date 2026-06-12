@@ -216,6 +216,16 @@ fish.rag.expand.strategy:
   IDENTITY → IdentityExpander（原句透传，不扩展）
 ```
 
+**三种策略下原句的处理**：
+
+| 策略 | 原句是否在结果中 | 说明 |
+|------|----------------|------|
+| **TOKEN** | ✅ 首条即原句 | `unique.add(trimmed)` 先加原句，再加词片段 |
+| **IDENTITY** | ✅ 唯一一条 | 仅返回 trim 后的原句 |
+| **LLM** | ✅ 首条即原句（v5.3 修复） | `parseAndValidate()` 先将原句插入结果列表头部再去重追加 LLM 子查询，保证 BM25 精确匹配不丢失 |
+
+> **v5.3 修复**：旧版 LLM 策略只返回 LLM 分解后的子查询，原句可能不在其中。如果 LLM 把 "Docker Compose 怎么部署 Redis？" 改写为 `["Docker Compose 部署配置", "Redis 容器化方案"]`，原句的精确关键词（如 "怎么"）会从 BM25 文本路中丢失。修复后原句始终排在首位，LLM 子查询追加在后面，通过 `LinkedHashSet` 自动去重。
+
 **LlmQueryDecomposer 降级链**：LLM 超时（3s）/ 解析失败 / 模型不可用 → 降级为单条原句。
 
 `[RagQueryExpandConfiguration.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/expand/RagQueryExpandConfiguration.java)` 根据 strategy 字段装配对应 Expander Bean。LLM 策略下如果 `memoryChatModel` 不可用，自动降级为 `IdentityExpander`。
@@ -408,8 +418,8 @@ pending 和 rejected 卡片不参与 RAG 检索，避免未审核内容污染对
   ↓
 [查询扩展] strategy=LLM → LlmQueryDecomposer
   → LLM 调用（memoryChatModel, temperature=0.3, timeout=3s）
-  → 返回: ["Docker Compose 部署 Redis 配置方法", "Redis 容器化部署最佳实践"]
-  （如果超时 → 降级为原句）
+  → 返回: ["Docker Compose 怎么部署 Redis？", "Docker Compose 部署 Redis 配置方法", "Redis 容器化部署最佳实践"]
+  （首条为原句，后续为 LLM 分解；超时 → 降级为单条原句）
   ↓
 [HyDE] enabled=false → 跳过
   ↓
@@ -458,11 +468,12 @@ pending 和 rejected 卡片不参与 RAG 检索，避免未审核内容污染对
 
 | 维度 | 原句直搜 | BreakIterator 词级 | LLM 语义分解（本项目默认） |
 |------|---------|-------------------|--------------------------|
-| 检索精度 | 低（长问题关键词被稀释） | 中（碎片化词片段） | 高（完整检索意图） |
+| 检索精度 | 低（长问题关键词被稀释） | 中（碎片化词片段） | 高（原句保底 + LLM 补充） |
 | 延迟 | 零 | 零 | +0.5-3s（LLM 调用） |
 | 额外 token | 0 | 0 | ~200-500/次 |
 | 降级方案 | N/A | N/A | ✅ 超时/失败 → 原句 |
-| 多意图支持 | ❌ | ❌（只是词碎片） | ✅（每条子查询独立意图） |
+| 多意图支持 | ❌ | ❌（只是词碎片） | ✅（原句 + LLM 补充子查询） |
+| 原句保留 | ✅ | ✅（首条即原句） | ✅（首条即原句，v5.3 保证） |
 
 **为什么默认 LLM**：聊天场景下用户消息经常包含多意图（"上次聊的 Docker 和 Redis 部署再讲一下"），LLM 能拆解为独立检索句。超时 3s 降级为原句，最坏情况下与 IDENTITY 策略等价。
 
@@ -546,6 +557,34 @@ k 是平滑常数——k 越大，top-1 和 top-2 的融合分差距越小（越
 **Q：知识卡片 Searcher 的三字段文本搜索为什么不同于其他 Searcher？**
 
 其他三个 Searcher 只搜 `content` 一个字段。卡片 Searcher 搜索 `title + content + keywords` 三个字段（`minimumShouldMatch=1`），因为卡片标题通常比内容更短更精确（如"TCP 三次握手"），如果只搜 content 可能漏召回。keywords 字段覆盖用户用别名检索的场景（卡片标记了"容器化"，用户搜"Docker"也能命中）。
+
+---
+
+## 最难/最有挑战的事情：RRF 分数融合中跨路分数不可比的问题
+
+### 问题
+RAG 四路并发检索（BM25 文本路 + cosine 向量路），需要合并排序选出最相关的文档。
+
+### 挑战
+BM25 分数和 cosine 分数的量纲完全不同——BM25 可以到 20+（甚至 100+），cosine 在 0-1 之间。如果直接按原始分合并排序，BM25 结果会完全压过向量结果，向量路的语义检索等于白做。但调线性权重（`α × BM25 + β × cosine`）需要针对不同查询手动调参，且不同查询的最优 α/β 不同。
+
+### 解决方案
+RRF（Reciprocal Rank Fusion）只看排名不看原始分：
+
+```java
+// RagScoreFusion.fuseByRrf()
+// 每组按原始 score 降序排 rank
+// RRF 融合分: score = Σ 1/(k + rank + 1)
+// k=60 是 HuggingFace BEIR benchmark 经验最优值
+```
+
+- 第 1 名得 1/(60+0+1) = 0.0164
+- 第 2 名得 1/(60+1+1) = 0.0161
+- 排名越靠前贡献越大，且不受原始分数量纲影响
+- 去重：同一文档 id 在多路出现时保留原始分最高的代表
+
+### 面试回答要点
+> "BM25 分数可以到 20+，cosine 分数在 0-1 之间——直接合并排序等于向量路废了。RRF 的核心洞察是：**不看分数看排名**。把所有路的排名归一化为倒数（1/(k+rank+1)），不同召回路的排名天然可比。k=60 是 HuggingFace BEIR benchmark 的经验最优值——越大头部差距越平滑。这比调线性权重简单得多，且不需要按查询手动调参。"
 
 ---
 
