@@ -53,6 +53,7 @@ public class UserMemoryElasticsearchSearcher implements RagRecall.DocumentSearch
                 .withMaxResults(size)
                 .withQuery(q -> q.bool(b -> b
                         .must(m -> m.match(mt -> mt.field("content").query(subQueryText)))
+                        .mustNot(mn -> mn.term(t -> t.field("superseded").value(true)))
                         .filter(f -> f.term(t -> t.field("source_type").value("chat")))
                         .filter(f -> f.term(t -> t.field("user_id").value(uid)))))
                 .build();
@@ -96,7 +97,8 @@ public class UserMemoryElasticsearchSearcher implements RagRecall.DocumentSearch
                         .numCandidates(numCandidates)
                         .filter(f -> f.bool(b -> b
                                 .filter(ff -> ff.term(t -> t.field("user_id").value(uid)))
-                                .filter(ff -> ff.term(t -> t.field("source_type").value("chat"))))))
+                                .filter(ff -> ff.term(t -> t.field("source_type").value("chat")))
+                                .mustNot(mn -> mn.term(t -> t.field("superseded").value(true))))))
                 .build();
         return mapHits(operations.search(q, UserMemoryDocument.class, index), RagRecall.RecallSource.VECTOR);
     }
@@ -114,7 +116,9 @@ public class UserMemoryElasticsearchSearcher implements RagRecall.DocumentSearch
                 continue;
             }
             String id = h.getId() != null ? h.getId() : doc.getId();
-            out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source));
+            double authority = doc.getAuthority() == null ? 0.8 : doc.getAuthority();
+            out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source,
+                    "记忆", authority, doc.getCreatedAt(), doc.getDocId(), doc.getChunkIndex()));
         }
         return out;
     }

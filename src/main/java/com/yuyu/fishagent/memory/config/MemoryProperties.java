@@ -61,6 +61,17 @@ public class MemoryProperties {
     }
 
     /**
+     * 长期记忆冲突治理子配置（{@code fish.memory.conflict.*}）。
+     */
+    @Data
+    public static class Conflict {
+        /** 是否启用 LLM 判定 SAME/CONFLICT/NEITHER；关闭时保留历史“相似即跳过”行为。 */
+        private boolean enabled = true;
+        /** 与候选事实比较的相似旧事实数量。 */
+        private int similarFactK = 5;
+    }
+
+    /**
      * 短期记忆保留的最近消息数量。
      */
     private int shortTermWindowSize = 20;
@@ -109,4 +120,9 @@ public class MemoryProperties {
      * {@code fish.memory.dedup}：长期事实写入前的 embedding 余弦查重参数。
      */
     private Dedup dedup = new Dedup();
+
+    /**
+     * {@code fish.memory.conflict}：相似长期事实的冲突与时效治理参数。
+     */
+    private Conflict conflict = new Conflict();
 }

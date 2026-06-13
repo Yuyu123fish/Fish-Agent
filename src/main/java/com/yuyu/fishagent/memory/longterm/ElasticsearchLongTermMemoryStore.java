@@ -11,6 +11,7 @@ import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.IndexOperations;
 import org.springframework.data.elasticsearch.core.document.Document;
 import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
+import org.springframework.data.elasticsearch.core.query.UpdateQuery;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -31,6 +32,7 @@ public class ElasticsearchLongTermMemoryStore implements LongTermMemoryStore {
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
     private final MemoryProperties properties;
     private final LongTermMemoryDeduplicator deduplicator;
+    private final MemoryConflictJudge conflictJudge;
 
     /**
      * 应用启动时按需创建长期记忆索引。
@@ -114,28 +116,77 @@ public class ElasticsearchLongTermMemoryStore implements LongTermMemoryStore {
                 continue;
             }
             try {
-                // 使用 EmbeddingModel 将事实文本转换为向量
-                List<Float> embedding = toFloatList(embeddingModel.embed(fact.trim()));
-                // 写入前查重：复用本次 embedding，避免为查重再次调用 embedding 模型。
-                if (deduplicator.isDuplicate(operations, index, String.valueOf(userId), embedding)) {
+                String normalizedFact = fact.trim();
+                // 使用 EmbeddingModel 将事实文本转换为向量；相似查找复用本次 embedding，避免重复调用模型。
+                List<Float> embedding = toFloatList(embeddingModel.embed(normalizedFact));
+                List<SimilarFact> similarFacts = deduplicator.findSimilar(
+                        operations,
+                        index,
+                        String.valueOf(userId),
+                        embedding,
+                        properties.getConflict().getSimilarFactK());
+                MemoryWriteDecision decision = decideMemoryWrite(normalizedFact, similarFacts);
+                if (decision.type() == MemoryDecision.DROP_DUPLICATE) {
                     log.debug("[ElasticsearchLongTermMemoryStore] 跳过重复长期事实 sid={}, factLen={}",
-                            sessionId, fact.trim().length());
+                            sessionId, normalizedFact.length());
                     continue;
+                }
+                if (decision.type() == MemoryDecision.SUPERSEDE_AND_WRITE) {
+                    supersedeConflicts(operations, index, decision.conflicts(), now);
                 }
                 String id = UUID.randomUUID().toString();
                 UserMemoryDocument document = new UserMemoryDocument();
                 document.setId(id);
                 document.setUserId(String.valueOf(userId));
-                document.setContent(fact.trim());
+                document.setContent(normalizedFact);
                 document.setCreatedAt(now);
                 document.setEmbedding(embedding);
                 document.setSourceType("chat");
+                document.setSuperseded(false);
                 operations.save(document, index);
                 log.debug("[ElasticsearchLongTermMemoryStore] 长期事实写入完成 sid={}, id={}, index={}, factLen={}, dims={}",
-                        sessionId, id, properties.getLongTermIndexName(), fact.trim().length(), embedding.size());
+                        sessionId, id, properties.getLongTermIndexName(), normalizedFact.length(), embedding.size());
             } catch (Exception e) {
                 log.warn("[ElasticsearchLongTermMemoryStore] 写入长期记忆失败 sid={}: {}", sessionId, e.getMessage());
             }
+        }
+    }
+
+    private MemoryWriteDecision decideMemoryWrite(String candidateFact, List<SimilarFact> similarFacts) {
+        if (similarFacts == null || similarFacts.isEmpty()) {
+            return new MemoryWriteDecision(MemoryDecision.WRITE_NEW, List.of());
+        }
+        if (!properties.getConflict().isEnabled()) {
+            return new MemoryWriteDecision(MemoryDecision.DROP_DUPLICATE, List.of());
+        }
+        List<SimilarFact> conflicts = new ArrayList<>();
+        boolean hasConflict = false;
+        for (SimilarFact similar : similarFacts) {
+            MemoryConflictJudge.Verdict verdict = conflictJudge.judge(candidateFact, similar);
+            if (verdict == MemoryConflictJudge.Verdict.SAME) {
+                return new MemoryWriteDecision(MemoryDecision.DROP_DUPLICATE, List.of());
+            }
+            if (verdict == MemoryConflictJudge.Verdict.CONFLICT) {
+                hasConflict = true;
+                conflicts.add(similar);
+            }
+        }
+        return hasConflict
+                ? new MemoryWriteDecision(MemoryDecision.SUPERSEDE_AND_WRITE, conflicts)
+                : new MemoryWriteDecision(MemoryDecision.WRITE_NEW, List.of());
+    }
+
+    /**
+     * 将被新事实冲突覆盖的旧事实标记为失效，而不是物理删除，便于后续审计和回滚。
+     */
+    private void supersedeConflicts(ElasticsearchOperations operations, IndexCoordinates index,
+                                    List<SimilarFact> conflicts, long now) {
+        for (SimilarFact similar : conflicts) {
+            Document patch = Document.create();
+            patch.put("superseded", true);
+            patch.put("valid_to", now);
+            operations.update(UpdateQuery.builder(similar.id()).withDocument(patch).build(), index);
+            log.debug("[ElasticsearchLongTermMemoryStore] 旧长期事实已失效 id={}, validTo={}", similar.id(), now);
         }
     }
 
@@ -149,6 +200,9 @@ public class ElasticsearchLongTermMemoryStore implements LongTermMemoryStore {
                 "user_id", Map.of("type", "keyword"),
                 "content", Map.of("type", "text"),
                 "created_at", Map.of("type", "date", "format", "epoch_millis"),
+                "superseded", Map.of("type", "boolean"),
+                "valid_to", Map.of("type", "date", "format", "epoch_millis"),
+                "source_type", Map.of("type", "keyword"),
                 "embedding", Map.of(
                         "type", "dense_vector",
                         "dims", properties.getEmbeddingDimensions(),
@@ -168,5 +222,14 @@ public class ElasticsearchLongTermMemoryStore implements LongTermMemoryStore {
             values.add(value);
         }
         return values;
+    }
+
+    private enum MemoryDecision {
+        WRITE_NEW,
+        DROP_DUPLICATE,
+        SUPERSEDE_AND_WRITE
+    }
+
+    private record MemoryWriteDecision(MemoryDecision type, List<SimilarFact> conflicts) {
     }
 }

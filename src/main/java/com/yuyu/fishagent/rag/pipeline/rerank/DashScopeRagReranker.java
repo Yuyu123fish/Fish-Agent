@@ -180,7 +180,7 @@ public class DashScopeRagReranker implements RagReranker {
             double score = result.get("relevance_score") instanceof Number scoreNumber
                     ? scoreNumber.doubleValue()
                     : base.score();
-            out.add(new RagRecall.RecallHit(base.id(), base.content(), score, base.source()));
+            out.add(base.withScore(score));
         }
         return out;
     }

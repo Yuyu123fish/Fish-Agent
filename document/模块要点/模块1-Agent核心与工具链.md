@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]**。**工具返回经 `ToolRegistry` 统一治理 [v5.3]：`TextTruncator` 智能截断 + 长结果提示引导模型先提取关键信息，单工具可 override 上限。**
+基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]**。**工具结果经 `ToolResultGovernor` 三层治理 [v6.2]：A 单结果 token 预算头尾截断（兜底）→ B LLM 摘要（中档）→ C 巨量结果分片入 Redis scratch + `search_large_result` 按需回取（招牌）；字符预算从 `TokenEstimator` 采样反推 CJK/Latin 密度，保证中文结果不绕过预算。turn-bound 动态 callback 把 scratch/trace 绑到同一轮 [v6.1/v6.2]。**（v5.3 的字符级 `TextTruncator` 治理已被 v6.2 取代，仅作无 governor 时的测试兼容回退。）
 
 ---
 
@@ -35,11 +35,12 @@ flowchart TB
 
     subgraph ToolSys["工具 SPI 体系"]
         SPI["AgentToolProvider 接口"]
-        TR["ToolRegistry 自动发现"]
-        BuiltIn["内置：DateTime / Calculator<br/>WebFetch / FileRead / FileWrite"]
+        TR["ToolRegistry 自动发现<br/>turn-bound 动态 callback [v6.2]"]
+        BuiltIn["内置：DateTime / Calculator<br/>WebFetch / FileRead / FileWrite<br/>search_large_result [v6.2]"]
         External["外部：Tavily / Bocha<br/>高德天气 / 高德地理 / Mail"]
-        Govern["ToolRegistry.governResult() [v5.3]<br/>智能截断 + 长结果提示<br/>TextTruncator 边界感知"]
-        Trunc["TextTruncator [v5.3]<br/>段落/句子边界截断<br/>head-tail 压缩预处理"]
+        Govern["ToolResultGovernor.govern() [v6.2]<br/>C scratch → B 摘要 → A 截断<br/>单结果 token 预算封顶"]
+        Budget["ToolResultBudgeter [v6.2]<br/>token-aware 字符预算<br/>head+tail 收敛"]
+        Scratch["LargeResultScratchStore [v6.2]<br/>巨量结果分片入 Redis scratch"]
     end
 
     CS --> CA --> CB --> BA
@@ -48,7 +49,9 @@ flowchart TB
     BA --> ToolSys
     SPI --> TR
     TR --> BuiltIn & External
-    TR --> Govern --> Trunc
+    TR --> Govern
+    Govern --> Budget
+    Govern --> Scratch
 ```
 
 ---
@@ -128,90 +131,105 @@ protected ReactAgent buildReactAgent(List<ToolCallback> tools, String systemProm
 
 启动期遍历所有 `AgentToolProvider` Bean，逐个调用 `build()` 构造 `ToolCallback`。单个工具构造失败 **不阻断**其他工具注册——catch 后 continue。同时为每个 `ToolCallback` 包一层 DEBUG 日志代理，运行时每次工具调用自动打印工具名与输入摘要。
 
-### 3. ChatAgent.stream() — 流式入口 + LLM 熔断保护 [v5.0]
+### 3. ChatAgent.stream() — 流式入口 + LLM 熔断 [v5.0] + turn-bound 重建 [v6.2] + 逐节点 trace [v6.1]
 
 `[ChatAgent.java](../../src/main/java/com/yuyu/fishagent/agent/ChatAgent.java)`：
 
 ```java
-public Flux<NodeOutput> stream(List<Message> messages, String threadId) {
+public Flux<NodeOutput> stream(List<Message> messages, String threadId, String turnId) {
     try {
         transitionTo(AgentStatus.RUNNING);
-        RunnableConfig config = RunnableConfig.builder()
-                .threadId(threadId).build();
-        return reactAgent.stream(messages, config)
-                // 保护完整 Flux 生命周期：上游流式错误、慢调用和熔断打开都能被记录。
-                .transformDeferred(CircuitBreakerOperator.of(llmCircuitBreaker))  // [v5.0]
-                .onErrorResume(CallNotPermittedException.class, e -> {            // [v5.0] CB OPEN → 降级
-                    log.warn("[ChatAgent] LLM 熔断器打开，返回降级提示");
-                    return fallbackStream();
-                })
+        RunnableConfig config = RunnableConfig.builder().threadId(threadId).build();
+        AtomicLong previousNodeAt = new AtomicLong(System.nanoTime());
+        // [v6.2] 有 turnId 的真实链路每轮重建 ReactAgent，把 scratch key/调用上限/trace 绑到本轮
+        ReactAgent agent = (turnId == null || turnId.isBlank())
+                ? reactAgent
+                : buildReactAgent(toolRegistry.allCallbacks(turnId), "");
+        return agent.stream(messages, config)
+                .transformDeferred(CircuitBreakerOperator.of(llmCircuitBreaker))   // [v5.0] 订阅时检查 CB
+                .onErrorResume(CallNotPermittedException.class, e -> fallbackStream())  // OPEN → 降级
+                .doOnNext(node -> recordTraceNode(turnId, node, previousNodeAt))   // [v6.1] 逐节点 trace + 耗时
                 .doOnComplete(() -> transitionTo(AgentStatus.FINISHED))
-                .doOnError(e -> {
-                    log.warn("[ChatAgent] stream 异常: {}", e.getMessage());
-                    transitionTo(AgentStatus.ERROR);
-                })
+                .doOnError(e -> transitionTo(AgentStatus.ERROR))
                 .doOnCancel(() -> transitionTo(AgentStatus.IDLE));
     } catch (Exception e) {
         transitionTo(AgentStatus.ERROR);
         return Flux.error(e);
     }
 }
-
-private Flux<NodeOutput> fallbackStream() {
-    return Flux.just(new StreamingOutput<>("服务暂时繁忙，请稍后重试", "llm-fallback", null));
-}
 ```
 
-**v5.0 关键设计**：
-- **`transformDeferred` 而非 `transform`**：`transform` 在构建时应用 operator（此时 CB 状态可能还是 CLOSED），`transformDeferred` 在**订阅时**才应用——每次订阅重新检查 CB 状态，保证 OPEN 时立即拦截
-- **`onErrorResume(CallNotPermittedException.class, ...)`**：只捕获熔断拒绝异常走降级，其他异常（网络错误、LLM 格式错误）正常传播到 ChatService 的 `subscribe.onError` 回调
-- **`fallbackStream()` 返回单元素 Flux**：用户看到的是一条明确的降级提示，而非错误中断。AgentStatus 仍正常转到 FINISHED
+**v5.0 熔断**：
+- **`transformDeferred` 而非 `transform`**：`transform` 构建时应用 operator（CB 可能还 CLOSED），`transformDeferred` 在**订阅时**才应用——每次订阅重新检查 CB 状态，OPEN 时立即拦截
+- **`onErrorResume(CallNotPermittedException.class, ...)`**：只捕获熔断拒绝走降级，其它异常（网络错误、LLM 格式错误）正常传播到 ChatService 的 `subscribe.onError`
+- **`fallbackStream()`** 返回单元素降级提示，AgentStatus 仍正常 FINISHED
+
+**v6.2 turn-bound**：`allCallbacks(turnId)` 每轮重建工具集，`wrap` 在 `call()` 前 `TraceContext.setTurnId(turnId)`、finally 里 restore——让 `ToolResultGovernor`、`LargeResultScratchStore`、`SearchLargeResultToolProvider` 都拿到本轮 turnId（scratch key = `fish:scratch:{turnId}`）。代价是每轮重建 ReactAgent，换的是 turn 隔离。
+
+**v6.1 逐节点 trace**：`doOnNext` 对每个 `NodeOutput` 分类（thought/action/observation/tool/streaming）+ 计算与上一节点耗时，落 `TraceCollector`，turn 结束经 `ChatTurnLifecycle` CAS 一次性 async 写 ES。
 
 返回 `Flux<NodeOutput>`，上层（ChatService）按需过滤 `StreamingOutput` chunk 推 SSE。
 
-### 4. 工具结果统一治理（v5.3）
+### 4. 工具结果治理 A/B/C（v6.2，取代 v5.3 字符截断）
 
-`[ToolRegistry.java](../../src/main/java/com/yuyu/fishagent/agent/tool/ToolRegistry.java)` 第 100-129 行：
+`[ToolResultGovernor.java](../../src/main/java/com/yuyu/fishagent/agent/tool/result/ToolResultGovernor.java)`
 
-所有 `ToolCallback.call()` 返回值经过 `governResult(toolName, result)` 统一处理：
+v5.3 的字符级 `TextTruncator` 治理已被 v6.2 取代（`ToolRegistry.governResult` 仅在 `toolResultGovernor == null` 时作测试兼容回退）。生产链路所有工具返回经 `ToolResultGovernor.govern(turnId, toolName, toolInput, result)` 统一处理，路由顺序 **C 检索式注入 → B 摘要 → A 截断**：
 
 ```java
-private String governResult(String toolName, String result) {
-    if (result == null) return null;
-    int limit = toolProperties.getMaxResultChars(toolName);
-    boolean shouldAppendHint = toolProperties.getHintThresholdChars() > 0
-            && result.length() > toolProperties.getHintThresholdChars();
-    String governed = result;
-    if (limit > 0 && governed.length() > limit) {
-        int bodyLimit = shouldAppendHint ? Math.max(1, limit - hint.length()) : limit;
-        governed = TextTruncator.truncateWithin(governed, bodyLimit);
+public GovernedResult govern(String turnId, String toolName, String toolInput, String result) {
+    int originalTokens = TokenEstimator.estimate(result);
+    int budget = properties.budgetTokensFor(toolName);          // 默认 4096，可按工具 override
+
+    // C 检索式注入：tokens ≥ max(budget+1, 20480) 且 turnId 存在且非 search_large_result
+    if (scratchEnabled && originalTokens >= Math.max(budget + 1, scratchLargeThreshold)
+            && turnId != null && !"search_large_result".equals(toolName)) {
+        StoreResult stored = scratchStore.store(turnId, toolName, result);   // 分片入 Redis scratch
+        if (stored.stored()) {
+            String injected = renderScratchInjection(toolName, originalTokens, stored);  // 只注 top-k 预览
+            return fit(injected, budget, "retrieved");
+        }
     }
-    if (shouldAppendHint) {
-        governed = appendWithinLimit(governed, hint, limit);
+    // B 摘要：tokens ≥ max(budget+1, 8192) → memoryChatModel 忠实摘要，失败回落 A
+    if (summarizeEnabled && originalTokens >= Math.max(budget + 1, summarizeThreshold)) {
+        String summary = summarizer.summarize(toolName, toolInput, result, budget);
+        if (summary != null && !summary.isBlank()) return fit(summary, budget, "summarized");
     }
-    return governed;
+    // A 头尾截断（兜底）
+    return budgeter.fit(result, budget, "truncated");
 }
 ```
 
-**三层防御**：
-1. **`TextTruncator.truncateWithin()`**：智能边界截断（段落 → 句号 → 硬截），保证最终长度含后缀不超限
-2. **ReAct 使用提示**：超过 `hintThresholdChars`（默认 1500）时追加提示，引导模型先提取关键信息
-3. **工具级 override**：`web_fetch: 6000`、`file_read: 8000`、`web_search: 3000`，不同工具不同上限
+**三层**：
 
-配置（`fish.tools.*`）：
+| 层 | 触发阈值 | 处置 | disposition |
+|----|---------|------|-------------|
+| **A 头尾截断**（兜底） | 超单结果预算 | `ToolResultBudgeter` head+tail 保留，中间中文 marker，token-aware 字符预算 while 收敛到 ≤ budget | truncated |
+| **B LLM 摘要**（中档） | ≥ 8192 token | `ToolResultSummarizer` 用 `memoryChatModel`（低温、禁工具）忠实摘要，保留错误/数字/路径/URL/时间/结论；摘要仍受 A 封顶；失败回落 A | summarized |
+| **C 检索式注入**（招牌） | ≥ 20480 token | `LargeResultScratchStore` 按 turnId 分片（token-aware，每片 ≤ `scratch-chunk-tokens`）入 `fish:scratch:{turnId}`（Redis + TTL，不可用走进程内）；只注 top-k 预览 + `search_large_result` 工具按关键词回取（单轮调用上限，空 scratch 不计数） | retrieved |
+
+**A 的字符预算为什么不能硬编码 `budget×4`（首轮审查 BLOCKER）**：项目主语言是中文，`TokenEstimator` 对 CJK 是 1.5 字符/token、Latin 是 4 字符/token。最初按 `budget×4`（Latin）算字符上限，中文结果落 6K–16K 字符时旧守卫 `head+tail >= text.length()` 直接返回原文 unchanged——**既超预算又因 disposition=unchanged 不留 trace，完全静默**（测试全 ASCII 故未发现）。修复：字符预算从文本样本采样反推 charsPerToken（clamp [1,4]）+ while 收敛 + 删危险守卫 + 4 条中文回归测试。
+
+配置（`fish.tool.result.*`）：
 
 | 配置 | 默认值 | 说明 |
 |------|--------|------|
-| `max-result-chars` | 4000 | 全局工具返回字符上限 |
-| `hint-threshold-chars` | 1500 | 超过追加提示的阈值 |
-| `overrides.web_fetch` | 6000 | 网页抓取允许更长 |
-| `overrides.file_read` | 8000 | 文件读取允许更长 |
-| `overrides.web_search` | 3000 | 搜索结果更紧凑 |
+| `budget-tokens` | 4096 | 单结果 token 预算（可按工具 override） |
+| `summarize-threshold-tokens` | 8192 | 超此走 B 摘要 |
+| `summarize-enabled` | true | 关闭则巨量结果只走 A/C |
+| `scratch-large-threshold-tokens` | 20480 | 超此走 C scratch |
+| `scratch-chunk-tokens` | 900 | scratch 分片 token |
+| `scratch-search-max-calls` | 5 | `search_large_result` 单轮调用上限 |
+| `scratch-inject-top-k` | 3 | 注入预览片段数 |
+| `scratch-ttl` | 30m | scratch TTL 兜底 |
 
-`[TextTruncator.java](../../src/main/java/com/yuyu/fishagent/common/util/TextTruncator.java)` 提供三种截断模式：
-- `truncate(text, maxLen)`：智能边界截断（段落 → 句号 → 硬截），适合工具结果
-- `truncateWithin(text, maxLen)`：硬预算截断，返回值长度严格不超限
-- `headTailCompress(text, head, tail)`：保留首尾、省略中间，适合压缩模型输入预处理
+**协同**：
+- `ToolRegistry.allCallbacks(turnId)` 每轮重建，`wrap` 绑定 turnId 到 `TraceContext`；
+- `TurnTrace.Node` 新增 `disposition`（truncated/summarized/retrieved），治理节点经 `recordDisposition` 落 trace，可追溯"为什么这条只有片段"；
+- `ChatService` 在 `ChatTurnLifecycle` 的 CAS finish callback（success/error/cancel/timeout 四路）调 `clearScratch(turnId)` 清两 key；
+- A/B/C 产物最终都进 `ContextBudgetAllocator`——per-result 封顶 = 单结果吃不爆总量。
+
+> 遗留：`TextTruncator`（`truncate` / `truncateWithin` / `headTailCompress`）仍作为通用文本工具保留，但**不再用于工具结果治理主链路**。
 
 ---
 
@@ -402,6 +420,15 @@ Tool description 是 LLM 决定调用哪个工具的唯一依据，项目遵循�
 
 对比反面案例：如果 `DateTimeToolProvider` 的 description 只写 `"get current datetime"`，模型可能不确定该用 DateTime 还是 WebFetch 去搜"现在几点"；写成 `"获取当前的日期与时间。可选传入 IANA 时区名（如 Asia/Shanghai），不传则使用系统默认时区。"` 后，模型能精确匹配"用户问现在几点"→ 调用 DateTime。
 
+**Q：工具结果太长吃爆上下文怎么办？[v6.2]**
+
+三层递进，`ToolResultGovernor.govern` 路由 **C → B → A**：
+- **A 单结果 token 预算头尾截断（兜底）**：默认 4096 token，head+tail 保留中间写中文 marker；
+- **B LLM 摘要（中档）**：≥ 8192 token 走 `memoryChatModel` 忠实摘要，失败回落 A；
+- **C 检索式注入（招牌）**：≥ 20480 token 的巨量结果不截断不摘要，分片入单轮 Redis scratch，只注 top-k 预览，agent 用 `search_large_result` 按需回取。
+
+三层产物都进 `ContextBudgetAllocator`，per-result 封顶 = 单结果吃不爆总量。**字符预算从 `TokenEstimator` 采样反推 CJK/Latin 密度**（踩过的坑：最初按 Latin ×4 算，中文 1.5 字符/token 导致 6K–16K 中文结果绕过预算且无 trace，全 ASCII 测试没发现——详见 §4）。
+
 **Q：一次典型对话消耗多少 token？最坏情况呢？**
 
 粗略估算（以 DeepSeek-chat 为基准，1K token ≈ ¥0.001）：
@@ -488,8 +515,13 @@ ReAct Agent 的核心是"思考-行动-观察"循环——模型自主决定调�
 | 工具注册中心 | `agent/tool/ToolRegistry.java` |
 | 内置工具 | `agent/tool/builtin/*.java` |
 | 外部工具 | `agent/tool/external/*.java` |
-| **LLM 熔断器常量 [v5.0]** | `common/resilience/ResilienceConstants.java` |
-| **熔断事件日志 [v5.0]** | `common/resilience/ResilienceConfig.java` |
-| **工具结果治理 [v5.3]** | `agent/tool/ToolRegistry.java`（governResult + appendWithinLimit） |
-| **工具治理配置 [v5.3]** | `agent/config/ToolProperties.java`（fish.tools.max-result-chars / overrides） |
-| **智能文本截断 [v5.3]** | `common/util/TextTruncator.java`（truncate / truncateWithin / headTailCompress） |
+| **LLM 熔断器常量 [v5.0]** | `common/resilience/ResilienceConstants.java`（CB_LLM / LLM_FALLBACK_MESSAGE） |
+| **熔断配置 [v5.0]** | `application.yml`（resilience4j.circuitbreaker.instances.llm：50%/80%/60s/3 探测） |
+| **工具结果治理总入口 A/B/C [v6.2]** | `agent/tool/result/ToolResultGovernor.java`（govern 路由 + recordDisposition） |
+| **单结果预算 + token-aware 截断 [v6.2]** | `agent/tool/result/ToolResultBudgeter.java`（initialCharBudget 采样反推 + while 收敛） |
+| **结果摘要 [v6.2]** | `agent/tool/result/ToolResultSummarizer.java`（memoryChatModel，失败回落 A） |
+| **巨量结果分片 scratch [v6.2]** | `agent/tool/result/LargeResultScratchStore.java`、`agent/tool/builtin/SearchLargeResultToolProvider.java` |
+| **工具治理配置 [v6.2]** | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.*`） |
+| **token 估算 [v5.4]** | `common/util/TokenEstimator.java`（CJK 1.5 / Latin 4 字符每 token） |
+| **逐节点 trace + disposition [v6.1/v6.2]** | `common/trace/TraceCollector.java`、`common/trace/TurnTrace.java` |
+| **通用文本工具（非治理主链路）** | `common/util/TextTruncator.java`（遗留，仍可用） |

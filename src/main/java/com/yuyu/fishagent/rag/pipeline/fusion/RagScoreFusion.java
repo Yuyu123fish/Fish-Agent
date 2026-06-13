@@ -55,7 +55,7 @@ public final class RagScoreFusion {
         List<RagRecall.RecallHit> out = new ArrayList<>(fusedScores.size());
         for (Map.Entry<String, Double> entry : fusedScores.entrySet()) {
             RagRecall.RecallHit hit = representatives.get(entry.getKey());
-            out.add(new RagRecall.RecallHit(hit.id(), hit.content(), entry.getValue(), hit.source()));
+            out.add(hit.withScore(entry.getValue()));
         }
         return out.stream()
                 .sorted(Comparator.comparingDouble(RagRecall.RecallHit::score).reversed())

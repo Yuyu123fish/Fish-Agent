@@ -128,6 +128,15 @@ class Settings(BaseSettings):
     fish_worker_embed_backoff_max: float = Field(
         default=30.0, validation_alias="FISH_WORKER_EMBED_BACKOFF_MAX"
     )
+    fish_rag_contextual_indexing_enabled: bool = Field(
+        default=True, validation_alias="FISH_RAG_CONTEXTUAL_INDEXING_ENABLED"
+    )
+    fish_rag_authority_private: float = Field(
+        default=0.7, validation_alias="FISH_RAG_AUTHORITY_PRIVATE"
+    )
+    fish_rag_authority_public: float = Field(
+        default=1.0, validation_alias="FISH_RAG_AUTHORITY_PUBLIC"
+    )
 
     # ---- 校验器 & 派生属性 ----
 

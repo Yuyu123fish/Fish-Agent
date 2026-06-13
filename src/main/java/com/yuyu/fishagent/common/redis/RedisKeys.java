@@ -13,6 +13,8 @@ package com.yuyu.fishagent.common.redis;
  * fish:ratelimit:token:{userId}         TTL 120s     dim=userId   令牌桶
  * fish:ratelimit:sse:{userId}           TTL 300s     dim=userId   SSE 并发计数
  * fish:mutex:session:{sid}              TTL 锁周期   dim=session  会话互斥锁
+ * fish:scratch:{turnId}                 TTL 单轮     dim=turn     大工具结果 scratch
+ * fish:scratch:{turnId}:calls           TTL 单轮     dim=turn     scratch 检索调用计数
  * fish:doc:ingest                       Stream       -            文档摄入流
  * </pre>
  */
@@ -26,6 +28,7 @@ public final class RedisKeys {
     public static final String CACHE_CARD = ROOT + ":cache:card:";
     public static final String RATELIMIT = ROOT + ":ratelimit:";
     public static final String MUTEX_SESSION = ROOT + ":mutex:session:";
+    public static final String SCRATCH = ROOT + ":scratch:";
     public static final String DOC_STREAM = ROOT + ":doc:ingest";
 
     private RedisKeys() {
@@ -61,5 +64,13 @@ public final class RedisKeys {
 
     public static String mutexSession(String sessionId) {
         return MUTEX_SESSION + sessionId;
+    }
+
+    public static String scratch(String turnId) {
+        return SCRATCH + turnId;
+    }
+
+    public static String scratchCalls(String turnId) {
+        return SCRATCH + turnId + ":calls";
     }
 }

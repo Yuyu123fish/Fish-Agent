@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-**查询分解 → 四索引双路并发召回（es-text/es-vector 熔断保护 [v5.0]）→ RRF 分数融合 → Cross-Encoder 精排（rerank 熔断保护 [v5.0]）→ Top-K 注入 SystemMessage** 五级管线，配合 **HyDE 假设性答案增强**、**ES 异步质量追踪** 与 **Resilience4j 外部服务熔断降级 [v5.0]**，实现数据驱动的检索闭环。
+**查询分解 → 四索引双路并发召回（es-text/es-vector 熔断保护 [v5.0]）→ RRF 分数融合 → Cross-Encoder 精排（rerank 熔断保护 [v5.0]）→ [v6.0 ProvenanceBooster 权威+新近加权 + ContextExpander 邻片扩展] → Top-K 注入 SystemMessage** 管线，配合 **HyDE 假设性答案增强**、**ES 异步质量追踪**、**Resilience4j 外部服务熔断降级 [v5.0]**、**v6.0 溯源标签 + 冲突感知 prompt**，实现数据驱动的检索闭环。
 
 ---
 
@@ -177,10 +177,19 @@ flowchart LR
 
 `[RagRecall.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/recall/RagRecall.java)`：
 
-**核心数据结构**：
+**核心数据结构**（v6.0 扩展 Provenance + 邻片坐标）：
 
 ```java
-public record RecallHit(String id, String content, double score, String source) {}
+public record RecallHit(
+    String id, String content, double score, String source,
+    String effectiveSourceLabel,  // [v6.0] 官方/公开/用户/记忆 → 渲染溯源标签
+    Double authority,             // [v6.0] 0–1，ProvenanceBooster 加权用
+    Long createdAt,               // [v6.0] 新近度 recencyNorm 用
+    String docId, Integer chunkIndex  // [v6.0] ContextExpander 邻片扩展坐标
+) {
+    RecallHit withScore(double s) {...}
+    RecallHit withContent(String c) {...}   // 邻片拼接后替换 content
+}
 ```
 
 **编排逻辑**：
@@ -384,6 +393,56 @@ pending 和 rejected 卡片不参与 RAG 检索，避免未审核内容污染对
 | `async` | true | 是否异步写入 |
 | `sample-rate` | 1.0 | 采样率（0.0-1.0） |
 
+### 8. 读侧冲突感知与邻片扩展（v6.0，攻 Q7/Q8）
+
+v6.0 在 rerank 之后、渲染之前插入两个治理组件，并给召回 BM25 升级为 contextualized 双字段。
+
+**① ProvenanceBooster（权威 + 新近加权，攻 Q8）** `[ProvenanceBooster.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/recall/ProvenanceBooster.java)`
+
+```java
+// boostedScore = score × (1 + α·authority + β·recencyNorm)
+// recencyNorm = exp(-ageDays / halfLife)
+return hits.stream().map(h -> h.withScore(boostedScore(h, now, cfg)))
+        .sorted(...reversed()).toList();
+```
+
+- 位于 **rerank 之后、渲染之前**，只调最终候选的排序分、不改召回内容——权威度/新鲜度是轻量偏置，**不掩盖 reranker 对语义相关性的主判断**；
+- `authority`：PUBLIC（官方）=1.0、PRIVATE（用户知识）=0.7（`SourceAuthority`，首轮审查发现此前无 1.0 来源是死代码，v6.0 打通 Python 入库写 1.0）；
+- `recencyNorm`：`exp(-ageDays/halfLife)`，半衰期 180d，只在 tie 起作用；
+- 默认 α=0.15 / β=0.10 / halfLife=180d（`fish.rag.provenance.*`）。
+
+**② ContextExpander（邻片扩展，攻 Q7）** `[ContextExpander.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/recall/ContextExpander.java)`
+
+rerank topN 后，按 `doc_id + chunk_index ± span`（默认 span=1）取前后邻片、去重、按 chunk_index 顺序拼回命中块的 `content`：
+
+```java
+// 仅对有 docId+chunkIndex 的文档切片生效；对话记忆/知识卡片无稳定坐标，跳过
+filter(doc_id = hit.docId) + range(chunk_index ∈ [idx-span, idx+span])
+sort by chunk_index ASC → 拼接 content
+```
+
+- **渲染预算保护首条中心命中**（审查修复）：超预算时首条命中**截断保留**而非整条 drop，后续命中超预算才 break；
+- 检索排序仍只看中心命中，扩展只补全渲染上下文，缓解"答案缺上下文"。
+
+**③ 溯源标签 + 冲突感知 prompt（攻 Q8 模型层）**
+
+渲染时每条 chunk 带 `[来源:官方/用户/公开·yyyy-MM]` 溯源标签（`SourceAuthority.labelForKnowledge`：authority≥0.95→官方），并追加冲突处理指令：声明冲突 / 优先权威新近 / 引用双方 / 不确定则反问 / 不编造。**系统层 booster + 模型层 prompt 双保险**。
+
+**④ BM25 升级 contextualized 双字段 [v6.0 D]**
+
+配合模块 5 的索引期上下文前缀，知识库 searcher 的 BM25 改为 `contextualized_content + content` 双字段 should 查询——孤立小块带文档上下文可被召回，**兼容旧索引**（旧数据无 contextualized 字段则只走 content）。
+
+配置（`fish.rag.provenance.*` / `fish.rag.expand-neighbors.*`）：
+
+| 配置 | 默认 | 说明 |
+|------|------|------|
+| `provenance.enabled` | true | 是否启用权威+新近加权 |
+| `provenance.authority-alpha` | 0.15 | authority 权重 |
+| `provenance.recency-beta` | 0.10 | 新近度权重 |
+| `provenance.recency-half-life-days` | 180 | 新近度半衰期 |
+| `expand-neighbors.enabled` | true | 是否启用邻片扩展 |
+| `expand-neighbors.neighbor-span` | 1 | 前后各取几片 |
+
 ---
 
 ## 方案详解
@@ -558,6 +617,14 @@ k 是平滑常数——k 越大，top-1 和 top-2 的融合分差距越小（越
 
 其他三个 Searcher 只搜 `content` 一个字段。卡片 Searcher 搜索 `title + content + keywords` 三个字段（`minimumShouldMatch=1`），因为卡片标题通常比内容更短更精确（如"TCP 三次握手"），如果只搜 content 可能漏召回。keywords 字段覆盖用户用别名检索的场景（卡片标记了"容器化"，用户搜"Docker"也能命中）。
 
+**Q：知识库两条资料冲突，AI 怎么选？（字节 Q8）[v6.0]**
+
+系统层 + 模型层双保险。**系统层 `ProvenanceBooster`**：rerank 后按 `boostedScore = score×(1+α·authority+β·recencyNorm)` 重排——官方（authority=1.0）+ 新近（半衰期 180d）的事实排在前面，但只调分不掩盖语义相关性主信号（α=0.15/β=0.10，只在 tie 起作用）。**模型层冲突感知 prompt**：每条 chunk 带 `[来源:官方/用户/公开·yyyy-MM]` 溯源标签 + 冲突处理指令（声明冲突 / 优先权威新近 / 引用双方 / 不确定反问 / 不编造）。首轮审查发现此前 PUBLIC 无 1.0 来源、ProvenanceBooster 是死代码，v6.0 通过 Python 入库写 authority=1.0 打通。
+
+**Q：检索到的 chunk 缺上下文怎么办？（字节 Q7）[v6.0]**
+
+两端治理。**索引期 contextual indexing**（模块 5）：分块后给每块前缀文档上下文再 embedding/BM25，孤立块带文档语义可召回。**检索期 ContextExpander**：rerank topN 后按 `doc_id + chunk_index ± 1` 取前后邻片、去重、按 chunk_index 顺序拼回命中块 content，渲染时补全上下文；预算保护首条中心命中截断保留而非整条 drop。
+
 ---
 
 ## 最难/最有挑战的事情：RRF 分数融合中跨路分数不可比的问题
@@ -600,6 +667,10 @@ RRF（Reciprocal Rank Fusion）只看排名不看原始分：
 | 用户知识检索 | `rag/pipeline/recall/UserKnowledgeElasticsearchSearcher.java` |
 | **知识卡片检索** | `rag/pipeline/recall/UserKnowledgeCardSearcher.java` |
 | 公共知识检索 | `rag/pipeline/recall/PublicKnowledgeElasticsearchSearcher.java` |
+| **权威+新近加权 [v6.0]** | `rag/pipeline/recall/ProvenanceBooster.java`（rerank 后调分） |
+| **邻片扩展 [v6.0]** | `rag/pipeline/recall/ContextExpander.java`（doc_id+chunk_index±span） |
+| **来源权威度 + 标签 [v6.0]** | `rag/pipeline/recall/SourceAuthority.java`（官方/公开/用户） |
+| **记忆时间标签 [v6.0]** | `rag/pipeline/recall/MemoryAgeLabel.java` |
 | **查询扩展** | `rag/pipeline/expand/RagQueryExpand.java` |
 | 扩展配置 | `rag/pipeline/expand/RagQueryExpandConfiguration.java` |
 | LLM 分解 Prompt | `rag/pipeline/expand/RagQueryDecomposePrompt.java` |

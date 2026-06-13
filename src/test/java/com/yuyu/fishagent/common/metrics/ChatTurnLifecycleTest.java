@@ -20,4 +20,18 @@ class ChatTurnLifecycleTest {
                 .timer()
                 .count()).isEqualTo(1);
     }
+
+    @Test
+    void shouldRunFinishCallbackOnlyOnce() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        java.util.concurrent.atomic.AtomicInteger callbacks = new java.util.concurrent.atomic.AtomicInteger();
+        ChatTurnLifecycle lifecycle = ChatTurnLifecycle.start(
+                new ChatMetrics(registry),
+                outcome -> callbacks.incrementAndGet());
+
+        lifecycle.success();
+        lifecycle.error(new RuntimeException("late"));
+
+        assertThat(callbacks).hasValue(1);
+    }
 }

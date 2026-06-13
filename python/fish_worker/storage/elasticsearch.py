@@ -68,6 +68,7 @@ class ElasticsearchIndexer:
         chunks: list[TextChunk],
         vectors: list[list[float]],
         batch_size: int,
+        default_authority: float = 1.0,
     ) -> None:
         """
         Args:
@@ -103,6 +104,10 @@ class ElasticsearchIndexer:
                     "doc_name": file_name,
                     "file_type": file_type,
                     "token_count": ch.token_count,
+                    "authority": float(default_authority),
+                    "doc_created_at": now_ms,
+                    "context_prefix": ch.context_prefix or "",
+                    "contextualized_content": ch.contextualized_text or ch.text,
                 }
                 if scope_private:
                     # 个人知识库索引不含 source_type（与 fish-user-memory 对话事实索引分离）

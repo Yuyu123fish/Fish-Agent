@@ -10,7 +10,12 @@ import com.yuyu.fishagent.chat.budget.BudgetPlan;
 import com.yuyu.fishagent.chat.budget.BudgetRequest;
 import com.yuyu.fishagent.chat.budget.ContextBudgetAllocator;
 import com.yuyu.fishagent.chat.budget.ContextWindowTrimmer;
+import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
 import com.yuyu.fishagent.common.trace.MdcAsync;
+import com.yuyu.fishagent.common.trace.TraceCollector;
+import com.yuyu.fishagent.common.trace.TraceConstants;
+import com.yuyu.fishagent.common.trace.TraceContext;
+import com.yuyu.fishagent.common.trace.TraceEsWriter;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.metrics.ChatTurnLifecycle;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
@@ -117,6 +122,12 @@ public class ChatService {
     private final FishLlmProperties fishLlmProperties;
     /** 用于解析当前 provider 对应的模型名，匹配模型窗口覆盖配置。 */
     private final Environment environment;
+    /** 单轮 Agent trace 收集器，只保存进行中的 turn。 */
+    private final TraceCollector traceCollector;
+    /** 单轮 Agent trace 异步 ES 写入器。 */
+    private final TraceEsWriter traceEsWriter;
+    /** 工具大结果 scratch 清理入口。 */
+    private final ToolResultGovernor toolResultGovernor;
 
     /**
      * 列出所有已持久化的会话。
@@ -179,7 +190,16 @@ public class ChatService {
     public String streamChat(String sessionId, String userInput, SseEmitter emitter) {
         final String sid = (sessionId == null || sessionId.isBlank())
                 ? UUID.randomUUID().toString() : sessionId;
-        final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics);
+        final String turnId = UUID.randomUUID().toString();
+        traceCollector.startTurn(turnId, sid, MDC.get(TraceConstants.TRACE_ID));
+        final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics, outcome -> {
+            var completedTrace = traceCollector.finishTurn(turnId, outcome);
+            if (completedTrace != null) {
+                traceEsWriter.persistAsync(completedTrace);
+                traceCollector.remove(turnId);
+            }
+            toolResultGovernor.clearScratch(turnId);
+        });
 
         // ReAct 完成回调可能在非 Servlet 线程执行，ThreadLocal 不会自动传递，此处快照用户上下文供 persist 使用。
         final UserContext streamUserSnapshot = UserContextHolder.get();
@@ -224,6 +244,8 @@ public class ChatService {
             // 1. 组装上下文：热路径仅读 L1(Redis)；L1/L2 均未命中才由协调器回源 L3 全量历史。
             buildResult = buildMessages(sid, streamUserId, userInput);
             buildResult.messages().add(new UserMessage(userInput));
+            traceCollector.recordRagInjected(turnId, buildResult.ragInjected());
+            traceCollector.recordMemoryInjected(turnId, buildResult.memoryInjected());
         } catch (Exception e) {
             log.error("[ChatService] 组装上下文失败 sid={}", sid, e);
             releaseSseSlotOnce.run();
@@ -267,47 +289,52 @@ public class ChatService {
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
         //调用大模型流式推理
-        disposableRef[0] = chatAgent.stream(buildResult.messages(), sid).subscribe(
-            node -> handleNode(node, emitter, assistantBuf),
-            err -> {
-                // Reactor 回调线程无 MDC，从入口快照恢复以使日志携带 traceId。
-                if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
-                try {
-                    log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
-                } finally { MDC.clear(); }
-                safeError(emitter, err);
-                turnLifecycle.error(err);
-            },
-            () -> {
-                String full = assistantBuf.full.toString().trim();
-                if (streamUserSnapshot != null) {
-                    UserContextHolder.set(streamUserSnapshot);
-                }
-                // Reactor 回调线程无 MDC，从入口快照恢复，使 persist / safeSend 日志携带 traceId。
-                if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
-                try {
-                    ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
-                    ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
+        TraceContext.setTurnId(turnId);
+        try {
+            disposableRef[0] = chatAgent.stream(buildResult.messages(), sid, turnId).subscribe(
+                node -> handleNode(node, emitter, assistantBuf),
+                err -> {
+                    // Reactor 回调线程无 MDC，从入口快照恢复以使日志携带 traceId。
+                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
                     try {
-                        persist(sid, userInput, full);
-                        shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
-                        updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
-                    } catch (Exception e) {
-                        log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
-                        // persist 失败不阻塞 emitter 关闭
+                        log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
+                    } finally { MDC.clear(); }
+                    safeError(emitter, err);
+                    turnLifecycle.error(err);
+                },
+                () -> {
+                    String full = assistantBuf.full.toString().trim();
+                    if (streamUserSnapshot != null) {
+                        UserContextHolder.set(streamUserSnapshot);
                     }
-                    safeSend(emitter, "done", full);
-                    turnLifecycle.success();
-                    emitter.complete();
-                    triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
-                    triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
-                            buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
-                } finally {
-                    UserContextHolder.clear();
-                    MDC.clear();
+                    // Reactor 回调线程无 MDC，从入口快照恢复，使 persist / safeSend 日志携带 traceId。
+                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+                    try {
+                        ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
+                        ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
+                        try {
+                            persist(sid, userInput, full);
+                            shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
+                            updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
+                        } catch (Exception e) {
+                            log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
+                            // persist 失败不阻塞 emitter 关闭
+                        }
+                        safeSend(emitter, "done", full);
+                        turnLifecycle.success();
+                        emitter.complete();
+                        triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
+                        triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
+                                buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
+                    } finally {
+                        UserContextHolder.clear();
+                        MDC.clear();
+                    }
                 }
-            }
-        );
+            );
+        } finally {
+            TraceContext.clear();
+        }
 
         return sid;
     }
@@ -345,11 +372,13 @@ public class ChatService {
         boolean trimmed = budgetPlan.exhausted();
         // 合并为单条 SystemMessage：Alibaba ReactAgent 还会在内部拼接系统位，多条 SystemMessage 会触发 AgentLlmNode 英文 WARN 且不利于模型解析。
         StringBuilder systemBlock = new StringBuilder(requiredSystemText);
+        StringBuilder memoryTraceBlock = new StringBuilder();
 
         if (snapshot.structuredSummary() != null) {
             String summaryBlock = formatStructuredSummaryForContext(snapshot.structuredSummary(), budgetPlan.summaryBudget());
             if (!summaryBlock.isBlank()) {
                 appendSystemSection(systemBlock, summaryBlock);
+                appendTraceSection(memoryTraceBlock, summaryBlock);
                 log.debug("[ChatService] 使用结构化短期记忆 sid={}", sid);
             } else {
                 trimmed = true;
@@ -360,6 +389,7 @@ public class ChatService {
         String excerptBlock = formatKeyExcerptsForContext(snapshot.keyExcerpts(), budgetPlan.excerptBudget());
         if (!excerptBlock.isBlank()) {
             appendSystemSection(systemBlock, excerptBlock);
+            appendTraceSection(memoryTraceBlock, excerptBlock);
             if (excerptBlockLineCount(excerptBlock) < effectiveExcerpts) {
                 trimmed = true;
             }
@@ -372,6 +402,7 @@ public class ChatService {
             String stateBlock = "## 当前会话状态\n" + formatAgentState(agentState);
             if (budgetPlan.stateBudget() > 0 && TokenEstimator.estimate(stateBlock) <= budgetPlan.stateBudget()) {
                 appendSystemSection(systemBlock, stateBlock);
+                appendTraceSection(memoryTraceBlock, stateBlock);
             } else {
                 trimmed = true;
             }
@@ -418,7 +449,9 @@ public class ChatService {
                 memoryResult.compressedOnColdPath(),
                 totalInputTokens,
                 budgetPlan.inputBudget(),
-                trimmed
+                trimmed,
+                rag.orElse(null),
+                memoryTraceBlock.isEmpty() ? null : memoryTraceBlock.toString()
         );
     }
 
@@ -430,7 +463,9 @@ public class ChatService {
             boolean skipMaintenanceCompression,
             int totalInputTokens,
             int inputBudget,
-            boolean trimmed) {
+            boolean trimmed,
+            String ragInjected,
+            String memoryInjected) {
     }
 
     /**
@@ -483,6 +518,21 @@ public class ChatService {
             systemBlock.append("\n\n---\n");
         }
         systemBlock.append(section.trim());
+    }
+
+    /**
+     * 记录本轮真实注入模型的记忆片段，供 TurnTrace 排障。
+     *
+     * <p>这里只保留短期摘要、关键摘录和会话状态，不包含固定人设、当前用户输入或完整历史。</p>
+     */
+    private static void appendTraceSection(StringBuilder traceBlock, String section) {
+        if (section == null || section.isBlank()) {
+            return;
+        }
+        if (!traceBlock.isEmpty()) {
+            traceBlock.append("\n\n---\n");
+        }
+        traceBlock.append(section.trim());
     }
 
     /**

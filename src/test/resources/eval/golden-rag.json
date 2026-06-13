@@ -1,0 +1,162 @@
+[
+  {
+    "id": "policy-authority-01",
+    "query": "最新报销政策是什么",
+    "candidates": [
+      {"id": "stale-public-01", "content": "旧公开资料：报销标准沿用上一版。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1600000000000, "relevance": 0},
+      {"id": "official-new-01", "content": "官方新政策：报销标准以 2026 版为准。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780000000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-02",
+    "query": "最新休假制度是什么",
+    "candidates": [
+      {"id": "stale-public-02", "content": "旧公开资料：年假审批仍按旧系统提交。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1601000000000, "relevance": 0},
+      {"id": "official-new-02", "content": "官方新制度：年假审批迁移到新版流程。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780100000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-03",
+    "query": "上海办公室地址",
+    "candidates": [
+      {"id": "stale-public-03", "content": "旧公开资料：上海办公室在旧园区。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1602000000000, "relevance": 0},
+      {"id": "official-new-03", "content": "官方资料：上海办公室已搬到新园区。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780200000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-04",
+    "query": "客户分级规则",
+    "candidates": [
+      {"id": "stale-public-04", "content": "旧公开资料：客户只按消费额分级。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1603000000000, "relevance": 1},
+      {"id": "official-new-04", "content": "官方规则：客户分级同时考虑消费额和活跃度。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780300000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-05",
+    "query": "售后响应 SLA",
+    "candidates": [
+      {"id": "stale-public-05", "content": "旧公开资料：售后响应为 48 小时内。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1604000000000, "relevance": 0},
+      {"id": "official-new-05", "content": "官方 SLA：售后响应调整为 24 小时内。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780400000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-06",
+    "query": "知识库发布流程",
+    "candidates": [
+      {"id": "stale-public-06", "content": "旧公开资料：发布无需复核。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1605000000000, "relevance": 0},
+      {"id": "official-new-06", "content": "官方流程：知识库发布必须经过负责人复核。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780500000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-07",
+    "query": "数据保留周期",
+    "candidates": [
+      {"id": "stale-public-07", "content": "旧公开资料：日志保留 7 天。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1606000000000, "relevance": 1},
+      {"id": "official-new-07", "content": "官方制度：核心日志保留 30 天。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780600000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-08",
+    "query": "新人培训安排",
+    "candidates": [
+      {"id": "stale-public-08", "content": "旧公开资料：新人培训为线下两天。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1607000000000, "relevance": 0},
+      {"id": "official-new-08", "content": "官方安排：新人培训为线上预习加线下一天。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780700000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-09",
+    "query": "合同审批金额阈值",
+    "candidates": [
+      {"id": "stale-public-09", "content": "旧公开资料：超过 10 万需要总监审批。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1608000000000, "relevance": 1},
+      {"id": "official-new-09", "content": "官方规则：超过 5 万需要总监审批。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780800000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-10",
+    "query": "线上工单优先级",
+    "candidates": [
+      {"id": "stale-public-10", "content": "旧公开资料：线上工单按创建时间排序。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1609000000000, "relevance": 0},
+      {"id": "official-new-10", "content": "官方规则：线上工单按客户级别和创建时间排序。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1780900000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-11",
+    "query": "发票开具规则",
+    "candidates": [
+      {"id": "stale-public-11", "content": "旧公开资料：发票可在季度末统一开具。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1610000000000, "relevance": 0},
+      {"id": "official-new-11", "content": "官方规则：发票需在订单确认后 7 天内开具。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781000000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-12",
+    "query": "客户隐私字段处理",
+    "candidates": [
+      {"id": "stale-public-12", "content": "旧公开资料：导出表允许包含完整手机号。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1611000000000, "relevance": 0},
+      {"id": "official-new-12", "content": "官方规则：导出表必须脱敏手机号。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781100000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-13",
+    "query": "灰度发布比例",
+    "candidates": [
+      {"id": "stale-public-13", "content": "旧公开资料：灰度默认 50%。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1612000000000, "relevance": 1},
+      {"id": "official-new-13", "content": "官方发布规范：首轮灰度默认 10%。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781200000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-14",
+    "query": "异常工单升级规则",
+    "candidates": [
+      {"id": "stale-public-14", "content": "旧公开资料：异常工单超过三天升级。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1613000000000, "relevance": 0},
+      {"id": "official-new-14", "content": "官方规则：异常工单超过一天升级。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781300000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-15",
+    "query": "模型调用限额",
+    "candidates": [
+      {"id": "stale-public-15", "content": "旧公开资料：单用户每日 1000 次调用。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1614000000000, "relevance": 1},
+      {"id": "official-new-15", "content": "官方规则：单用户每日 500 次调用。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781400000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-16",
+    "query": "知识库删除审批",
+    "candidates": [
+      {"id": "stale-public-16", "content": "旧公开资料：知识库条目可直接删除。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1615000000000, "relevance": 0},
+      {"id": "official-new-16", "content": "官方规则：知识库条目删除需审批并留审计记录。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781500000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-17",
+    "query": "告警通知渠道",
+    "candidates": [
+      {"id": "stale-public-17", "content": "旧公开资料：告警只发邮件。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1616000000000, "relevance": 0},
+      {"id": "official-new-17", "content": "官方规则：P0 告警同时发 IM、短信和邮件。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781600000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-18",
+    "query": "供应商准入条件",
+    "candidates": [
+      {"id": "stale-public-18", "content": "旧公开资料：供应商只需营业执照。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1617000000000, "relevance": 1},
+      {"id": "official-new-18", "content": "官方规则：供应商需营业执照、资质和安全评估。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781700000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-19",
+    "query": "数据导入模板",
+    "candidates": [
+      {"id": "stale-public-19", "content": "旧公开资料：导入模板使用 v1 字段。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1618000000000, "relevance": 0},
+      {"id": "official-new-19", "content": "官方模板：导入模板已升级到 v2 字段。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781800000000, "relevance": 3}
+    ]
+  },
+  {
+    "id": "policy-authority-20",
+    "query": "生产变更冻结期",
+    "candidates": [
+      {"id": "stale-public-20", "content": "旧公开资料：月底不设置变更冻结。", "score": 0.5, "sourceLabel": "公开", "authority": 0.5, "createdAt": 1619000000000, "relevance": 0},
+      {"id": "official-new-20", "content": "官方规则：月末最后两个工作日为生产变更冻结期。", "score": 0.5, "sourceLabel": "官方", "authority": 1.0, "createdAt": 1781900000000, "relevance": 3}
+    ]
+  }
+]

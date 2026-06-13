@@ -44,4 +44,26 @@ public class UserMemoryDocument {
 
     @Field(name = "chunk_index", type = FieldType.Integer)
     private Integer chunkIndex;
+
+    @Field(name = "superseded", type = FieldType.Boolean)
+    private boolean superseded = false;
+
+    @Field(name = "valid_to")
+    private Long validTo;
+
+    @Field(name = "authority", type = FieldType.Double)
+    private Double authority;
+
+    @Field(name = "doc_created_at")
+    private Long docCreatedAt;
+
+    @Field(name = "context_prefix", type = FieldType.Text)
+    private String contextPrefix;
+
+    @Field(name = "contextualized_content", type = FieldType.Text, analyzer = "ik_max_word", searchAnalyzer = "ik_smart")
+    private String contextualizedContent;
+
+    public Long bestCreatedAt() {
+        return docCreatedAt != null ? docCreatedAt : createdAt;
+    }
 }

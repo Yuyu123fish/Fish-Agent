@@ -225,6 +225,9 @@ fish:
       similarity-threshold: ${FISH_MEMORY_DEDUP_THRESHOLD:0.92}
       k: 3
       num-candidates: 20
+    conflict:
+      enabled: ${FISH_MEMORY_CONFLICT_ENABLED:true}
+      similar-fact-k: ${FISH_MEMORY_CONFLICT_SIMILAR_FACT_K:5}
     # 记忆压缩 / 长期事实抽取专用 Chat（DEEPSEEK 下为独立 OpenAiChatModel）
     chat:
       enabled: ${MEMORY_CHAT_ENABLED:true}
@@ -286,6 +289,41 @@ fish:
       index-name: ${FISH_RAG_TRACE_INDEX:fish-rag-trace}
       async: true
       sample-rate: ${FISH_RAG_TRACING_SAMPLE_RATE:1.0}
+    provenance:
+      enabled: ${FISH_RAG_PROVENANCE_ENABLED:true}
+      authority-alpha: ${FISH_RAG_PROVENANCE_AUTHORITY_ALPHA:0.15}
+      recency-beta: ${FISH_RAG_PROVENANCE_RECENCY_BETA:0.10}
+      recency-half-life-days: ${FISH_RAG_PROVENANCE_RECENCY_HALF_LIFE_DAYS:180}
+    expand-neighbors:
+      enabled: ${FISH_RAG_EXPAND_NEIGHBORS_ENABLED:true}
+      neighbor-span: ${FISH_RAG_EXPAND_NEIGHBORS_SPAN:1}
+    contextual-indexing:
+      enabled: ${FISH_RAG_CONTEXTUAL_INDEXING_ENABLED:true}
+      authority-private: ${FISH_RAG_AUTHORITY_PRIVATE:0.7}
+      authority-public: ${FISH_RAG_AUTHORITY_PUBLIC:1.0}
+
+  # ── Eval / Trace ───────────────────────────────────────────
+  eval:
+    golden-set-path: ${FISH_EVAL_GOLDEN_SET_PATH:classpath:eval/golden-rag.json}
+    judge-model: memoryChatModel
+  trace:
+    enabled: ${FISH_TRACE_ENABLED:true}
+    es-index: ${FISH_TRACE_ES_INDEX:fish-trace}
+    doc-max-chars: ${FISH_TRACE_DOC_MAX_CHARS:50000}
+    sample-rate: ${FISH_TRACE_SAMPLE_RATE:1.0}
+
+  # ── v6.2 工具结果治理：A 单结果预算 / B 摘要 / C scratch 检索式注入 ──
+  tool:
+    result:
+      budget-tokens: ${FISH_TOOL_RESULT_BUDGET_TOKENS:4096}
+      summarize-threshold-tokens: ${FISH_TOOL_RESULT_SUMMARIZE_THRESHOLD_TOKENS:8192}
+      summarize-enabled: ${FISH_TOOL_RESULT_SUMMARIZE_ENABLED:true}
+      scratch-large-threshold-tokens: ${FISH_TOOL_RESULT_SCRATCH_LARGE_THRESHOLD_TOKENS:20480}
+      scratch-enabled: ${FISH_TOOL_RESULT_SCRATCH_ENABLED:true}
+      scratch-search-max-calls: ${FISH_TOOL_RESULT_SCRATCH_SEARCH_MAX_CALLS:5}
+      scratch-chunk-tokens: ${FISH_TOOL_RESULT_SCRATCH_CHUNK_TOKENS:900}
+      scratch-inject-top-k: ${FISH_TOOL_RESULT_SCRATCH_INJECT_TOP_K:3}
+      scratch-ttl: ${FISH_TOOL_RESULT_SCRATCH_TTL:30m}
 
   # ── 外部工具 ───────────────────────────────────────────────
   tools:

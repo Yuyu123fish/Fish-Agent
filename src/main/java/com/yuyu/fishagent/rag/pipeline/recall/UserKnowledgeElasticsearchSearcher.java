@@ -47,7 +47,11 @@ public class UserKnowledgeElasticsearchSearcher implements RagRecall.DocumentSea
         NativeQuery query = NativeQuery.builder()
                 .withMaxResults(size)
                 .withQuery(q -> q.bool(b -> b
-                        .must(m -> m.match(mt -> mt.field("content").query(subQueryText)))
+                        // 新文档优先命中 contextualized_content；保留 content 兼容历史切片。
+                        .must(m -> m.bool(bb -> bb
+                                .should(s -> s.match(mt -> mt.field("contextualized_content").query(subQueryText)))
+                                .should(s -> s.match(mt -> mt.field("content").query(subQueryText)))
+                                .minimumShouldMatch("1")))
                         .filter(f -> f.term(t -> t.field("user_id").value(uid)))))
                 .build();
         return mapHits(operations.search(query, UserMemoryDocument.class, index), RagRecall.RecallSource.TEXT);
@@ -103,7 +107,9 @@ public class UserKnowledgeElasticsearchSearcher implements RagRecall.DocumentSea
                 continue;
             }
             String id = h.getId() != null ? h.getId() : doc.getId();
-            out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source));
+            out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source,
+                    SourceAuthority.labelForKnowledge(doc.getAuthority(), false),
+                    doc.getAuthority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex()));
         }
         return out;
     }

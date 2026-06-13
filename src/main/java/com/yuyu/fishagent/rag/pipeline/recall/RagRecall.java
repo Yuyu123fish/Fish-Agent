@@ -11,6 +11,7 @@ import com.yuyu.fishagent.auth.context.UserContextHolder;
 import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
 import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.common.trace.MdcAsync;
+import com.yuyu.fishagent.rag.config.KnowledgeProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
 import com.yuyu.fishagent.rag.tracing.RagQualityLogger;
@@ -28,6 +29,9 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
@@ -49,8 +53,31 @@ public final class RagRecall {
         VECTOR
     }
 
-    /** 单条 ES 命中。 */
-    public record RecallHit(String id, String content, double score, RecallSource source) {
+    /**
+     * 单条召回命中。
+     *
+     * <p>除内容与分数外，携带来源、权威度、时间与文档定位信息，供后续 provenance 加权、邻块扩展和渲染标签复用。
+     * 四参数构造保留旧调用方兼容；新字段缺失时各后处理组件会按来源给出保守默认值。</p>
+     */
+    public record RecallHit(String id, String content, double score, RecallSource source,
+                            String sourceLabel, Double authority, Long createdAt,
+                            String docId, Integer chunkIndex) {
+
+        public RecallHit(String id, String content, double score, RecallSource source) {
+            this(id, content, score, source, null, null, null, null, null);
+        }
+
+        public RecallHit withScore(double newScore) {
+            return new RecallHit(id, content, newScore, source, sourceLabel, authority, createdAt, docId, chunkIndex);
+        }
+
+        public RecallHit withContent(String newContent) {
+            return new RecallHit(id, newContent, score, source, sourceLabel, authority, createdAt, docId, chunkIndex);
+        }
+
+        public String effectiveSourceLabel() {
+            return sourceLabel == null || sourceLabel.isBlank() ? "公开" : sourceLabel.trim();
+        }
     }
 
     /** 供 Chat 层注入：把本轮用户输入转为可插入系统消息的 RAG 文本（若有命中）。 */
@@ -142,9 +169,12 @@ public final class RagRecall {
         private final RagQualityLogger qualityLogger;
         private final CircuitBreakerHelper circuitBreakerHelper;
         private final ChatMetrics chatMetrics;
+        private final ProvenanceBooster provenanceBooster;
+        private final ContextExpander contextExpander;
 
         public DefaultAugmentation(
                 RagProperties ragProperties,
+                KnowledgeProperties knowledgeProperties,
                 RagQueryRewrite.QueryRewriter queryRewriter,
                 RagQueryExpand.SubQueryExpander subQueryExpander,
                 DocumentSearcher userMemorySearcher,
@@ -172,6 +202,8 @@ public final class RagRecall {
             this.qualityLogger = qualityLogger;
             this.circuitBreakerHelper = circuitBreakerHelper;
             this.chatMetrics = chatMetrics;
+            this.provenanceBooster = new ProvenanceBooster(ragProperties);
+            this.contextExpander = new ContextExpander(ragProperties, knowledgeProperties, operationsProvider);
         }
 
         @Override
@@ -356,6 +388,8 @@ public final class RagRecall {
             long rerankStart = System.currentTimeMillis();
             List<RecallHit> finalHits = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.RERANK).record(() ->
                     reranker.rerank(textForExpandAndVector, candidates, topN));
+            finalHits = provenanceBooster.boost(finalHits, System.currentTimeMillis());
+            finalHits = contextExpander.expand(finalHits);
             trace.setRerankLatencyMs(System.currentTimeMillis() - rerankStart);
             if (finalHits.isEmpty()) {
                 log.debug("[RagRecall] 精排后无命中 sid={}, rerankInput={}, rerankTopN={}",
@@ -447,7 +481,16 @@ public final class RagRecall {
             int usedTokens = 0;
             int n = 1;
             for (RecallHit h : merged) {
-                String line = n + ". " + h.content().replace("\r\n", "\n").replace("\n", " ") + "\n";
+                String rawLine = n + ". " + formatFactLine(h);
+                String fittedLine = rawLine;
+                int remainingTokens = tokenBudget - usedTokens;
+                if (TokenEstimator.estimate(rawLine) > remainingTokens) {
+                    if (n > 1) {
+                        break;
+                    }
+                    fittedLine = fitLineToTokenBudget(rawLine, remainingTokens);
+                }
+                String line = fittedLine + "\n";
                 int lineTokens = TokenEstimator.estimate(line);
                 if (usedTokens + lineTokens > tokenBudget) {
                     break;
@@ -459,11 +502,32 @@ public final class RagRecall {
             return sb.toString().trim();
         }
 
+        private static String fitLineToTokenBudget(String line, int remainingTokens) {
+            if (remainingTokens <= 0 || TokenEstimator.estimate(line) <= remainingTokens) {
+                return line;
+            }
+            String suffix = "…";
+            int low = 0;
+            int high = line.length();
+            String best = "";
+            while (low <= high) {
+                int mid = (low + high) >>> 1;
+                String candidate = line.substring(0, mid).trim() + suffix;
+                if (TokenEstimator.estimate(candidate) <= remainingTokens) {
+                    best = candidate;
+                    low = mid + 1;
+                } else {
+                    high = mid - 1;
+                }
+            }
+            return best.isBlank() ? line : best;
+        }
+
         private static String renderBlockByChars(List<RecallHit> merged, int maxChars) {
             StringBuilder sb = new StringBuilder(ragHeader());
             int n = 1;
             for (RecallHit h : merged) {
-                String line = n + ". " + h.content().replace("\r\n", "\n").replace("\n", " ") + "\n";
+                String line = n + ". " + formatFactLine(h) + "\n";
                 if (sb.length() + line.length() > maxChars) {
                     break;
                 }
@@ -477,9 +541,26 @@ public final class RagRecall {
             // 避免模型对用户复述「长期记忆/片段/检索」等元话术；事实条仍编号便于模型对照。
             return """
                     【内部参考】以下为可能与当前对话相关的已知事实（仅使用其中已列内容，勿编造）。
+                    若多条参考事实彼此冲突，请优先采用来源更权威、时间更新的事实；无法判断时保持谨慎，不要强行合并。
                     回复用户时请自然承接，勿提及「记忆」「片段」「检索」「上下文」「系统提示」「根据上面/本段」或交代信息来源。
                     可确认的事实：
                     """;
+        }
+
+        private static String formatFactLine(RecallHit hit) {
+            String content = hit.content() == null ? "" : hit.content().replace("\r\n", "\n").replace("\n", " ").trim();
+            String label = hit.effectiveSourceLabel();
+            if ("记忆".equals(label)) {
+                String age = MemoryAgeLabel.format(hit.createdAt(), java.time.Clock.systemDefaultZone());
+                return "[记忆 · " + age + "] " + content;
+            }
+            if (hit.createdAt() != null && hit.createdAt() > 0) {
+                String month = DateTimeFormatter.ofPattern("yyyy-MM")
+                        .withZone(ZoneId.systemDefault())
+                        .format(Instant.ofEpochMilli(hit.createdAt()));
+                return "[来源:" + label + "·" + month + "] " + content;
+            }
+            return "[来源:" + label + "] " + content;
         }
     }
 

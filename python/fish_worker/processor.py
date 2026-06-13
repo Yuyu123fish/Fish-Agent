@@ -23,6 +23,7 @@ import threading
 from collections.abc import Callable
 
 from fish_worker.chunker.text_chunker import chunk_elements
+from fish_worker.chunker.contextual_indexing import apply_contextual_prefixes
 from fish_worker.chunker.structured_chunker import chunk_elements as structured_chunk_elements
 from fish_worker.deps import WorkerContext
 from fish_worker.exceptions import UnsupportedFileTypeError
@@ -99,8 +100,17 @@ class IngestProcessor:
                 )
                 return
 
+            # ---- 步骤 4.5: 上下文化索引文本（content 保持原文，embedding 使用 contextualized_text）----
+            document_text = "\n".join(el.text for el in elements if el.text)
+            chunks = apply_contextual_prefixes(
+                chunks,
+                document_text,
+                enabled=self._settings.fish_rag_contextual_indexing_enabled,
+                fallback_title=task.file_name or "",
+            )
+
             # ---- 步骤 5: 批量调用 embedding API ----
-            vectors = self._embedder.embed_batch([c.text for c in chunks])
+            vectors = self._embedder.embed_batch([c.contextualized_text or c.text for c in chunks])
 
             # ---- 步骤 6: 写入 ES ----
             # scope_type=PRIVATE → fish-user-knowledge（个人文档）；PUBLIC → fish-public-knowledge（组织知识）
@@ -123,6 +133,11 @@ class IngestProcessor:
                 chunks=chunks,
                 vectors=vectors,
                 batch_size=self._settings.fish_worker_es_batch_size,
+                default_authority=(
+                    self._settings.fish_rag_authority_private
+                    if scope_private
+                    else self._settings.fish_rag_authority_public
+                ),
             )
 
             # ---- 步骤 7: 更新成功 ----

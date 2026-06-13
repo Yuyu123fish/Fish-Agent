@@ -42,7 +42,11 @@ public class PublicKnowledgeElasticsearchSearcher implements RagRecall.DocumentS
         IndexCoordinates index = IndexCoordinates.of(knowledgeProperties.getPublicIndexName());
         NativeQuery query = NativeQuery.builder()
                 .withMaxResults(size)
-                .withQuery(q -> q.match(m -> m.field("content").query(subQueryText)))
+                .withQuery(q -> q.bool(b -> b
+                        // 新文档优先命中 contextualized_content；保留 content 兼容历史切片。
+                        .should(s -> s.match(m -> m.field("contextualized_content").query(subQueryText)))
+                        .should(s -> s.match(m -> m.field("content").query(subQueryText)))
+                        .minimumShouldMatch("1")))
                 .build();
         return mapHits(operations.search(query, PublicKnowledgeDocument.class, index), RagRecall.RecallSource.TEXT);
     }
@@ -90,7 +94,9 @@ public class PublicKnowledgeElasticsearchSearcher implements RagRecall.DocumentS
                 continue;
             }
             String id = h.getId() != null ? h.getId() : doc.getId();
-            out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source));
+            out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source,
+                    SourceAuthority.labelForKnowledge(doc.getAuthority(), true),
+                    doc.getAuthority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex()));
         }
         return out;
     }

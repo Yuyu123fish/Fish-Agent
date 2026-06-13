@@ -5,6 +5,7 @@ import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
+import com.yuyu.fishagent.rag.config.KnowledgeProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.DashScopeRagReranker;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
@@ -46,6 +47,7 @@ public class RagRecallConfiguration {
     @Bean
     public RagRecall.Augmentation longTermRagContextService(
             RagProperties ragProperties,
+            KnowledgeProperties knowledgeProperties,
             RagQueryRewrite.QueryRewriter queryRewriter,
             RagQueryExpand.SubQueryExpander subQueryExpander,
             UserMemoryElasticsearchSearcher userMemoryElasticsearchSearcher,
@@ -61,6 +63,7 @@ public class RagRecallConfiguration {
             ChatMetrics chatMetrics) {
         return new RagRecall.DefaultAugmentation(
                 ragProperties,
+                knowledgeProperties,
                 queryRewriter,
                 subQueryExpander,
                 userMemoryElasticsearchSearcher,

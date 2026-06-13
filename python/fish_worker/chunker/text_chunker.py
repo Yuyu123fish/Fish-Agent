@@ -47,6 +47,8 @@ class TextChunk:
     chunk_index: int
     page: int | None
     token_count: int
+    context_prefix: str = ""
+    contextualized_text: str | None = None
 
 
 def chunk_tokens(

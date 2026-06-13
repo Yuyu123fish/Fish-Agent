@@ -26,13 +26,18 @@ public class LongTermMemoryDeduplicator {
 
     public boolean isDuplicate(ElasticsearchOperations operations, IndexCoordinates index,
                                String userId, List<Float> candidateVector) {
+        return !findSimilar(operations, index, userId, candidateVector, properties.getDedup().getK()).isEmpty();
+    }
+
+    public List<SimilarFact> findSimilar(ElasticsearchOperations operations, IndexCoordinates index,
+                                         String userId, List<Float> candidateVector, int requestedK) {
         MemoryProperties.Dedup cfg = properties.getDedup();
         if (!cfg.isEnabled() || candidateVector == null || candidateVector.isEmpty()
                 || userId == null || userId.isBlank()) {
-            return false;
+            return List.of();
         }
         try {
-            int k = Math.max(1, cfg.getK());
+            int k = Math.max(1, requestedK);
             int numCandidates = Math.max(k, cfg.getNumCandidates());
             NativeQuery query = NativeQuery.builder()
                     .withMaxResults(k)
@@ -43,25 +48,28 @@ public class LongTermMemoryDeduplicator {
                             .numCandidates(numCandidates)
                             .filter(f -> f.bool(b -> b
                                     .filter(ff -> ff.term(t -> t.field("user_id").value(userId)))
-                                    .filter(ff -> ff.term(t -> t.field("source_type").value("chat"))))))
+                                    .filter(ff -> ff.term(t -> t.field("source_type").value("chat")))
+                                    .mustNot(mn -> mn.term(t -> t.field("superseded").value(true))))))
                     .build();
 
-            List<List<Float>> neighbors = new ArrayList<>();
+            List<SimilarFact> similar = new ArrayList<>();
             for (SearchHit<UserMemoryDocument> hit : operations.search(query, UserMemoryDocument.class, index).getSearchHits()) {
                 UserMemoryDocument doc = hit.getContent();
                 if (doc != null && doc.getEmbedding() != null && !doc.getEmbedding().isEmpty()) {
-                    neighbors.add(doc.getEmbedding());
+                    double score = cosine(candidateVector, doc.getEmbedding());
+                    if (score >= cfg.getSimilarityThreshold() && doc.getContent() != null && !doc.getContent().isBlank()) {
+                        String id = hit.getId() != null ? hit.getId() : doc.getId();
+                        similar.add(new SimilarFact(id, doc.getContent().trim(), doc.getCreatedAt(), score));
+                    }
                 }
             }
-            double max = maxCosine(candidateVector, neighbors);
-            boolean duplicate = max >= cfg.getSimilarityThreshold();
-            if (duplicate) {
-                log.debug("[LongTermMemoryDeduplicator] 命中重复事实 maxCos={}, threshold={}", max, cfg.getSimilarityThreshold());
+            if (!similar.isEmpty()) {
+                log.debug("[LongTermMemoryDeduplicator] 命中相似事实 count={}, threshold={}", similar.size(), cfg.getSimilarityThreshold());
             }
-            return duplicate;
+            return similar;
         } catch (Exception e) {
-            log.warn("[LongTermMemoryDeduplicator] 查重失败，按非重复处理: {}", e.getMessage());
-            return false;
+            log.warn("[LongTermMemoryDeduplicator] 查重失败，按无相似事实处理: {}", e.getMessage());
+            return List.of();
         }
     }
 

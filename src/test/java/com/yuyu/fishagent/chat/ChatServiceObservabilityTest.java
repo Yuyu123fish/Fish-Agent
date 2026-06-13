@@ -44,7 +44,7 @@ class ChatServiceObservabilityTest {
         ChatAgent chatAgent = mock(ChatAgent.class);
         @SuppressWarnings("unchecked")
         Flux<NodeOutput> never = Flux.never();
-        when(chatAgent.stream(any(), anyString())).thenReturn(never);
+        when(chatAgent.stream(any(), anyString(), anyString())).thenReturn(never);
 
         ShortTermMemoryService shortTermMemoryService = mock(ShortTermMemoryService.class);
         when(shortTermMemoryService.loadForTurnWithMetadata(any(), anyString(), any()))
@@ -76,7 +76,10 @@ class ChatServiceObservabilityTest {
                 new ChatMetrics(registry),
                 new ObjectMapper(),
                 new FishLlmProperties(),
-                environment);
+                environment,
+                new com.yuyu.fishagent.common.trace.TraceCollector(new com.yuyu.fishagent.common.trace.TraceProperties()),
+                mock(com.yuyu.fishagent.common.trace.TraceEsWriter.class),
+                mock(com.yuyu.fishagent.agent.tool.result.ToolResultGovernor.class));
 
         SseEmitter emitter = mock(SseEmitter.class);
         doAnswer(invocation -> {

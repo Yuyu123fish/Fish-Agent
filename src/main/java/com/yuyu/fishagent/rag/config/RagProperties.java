@@ -46,6 +46,12 @@ public class RagProperties {
     /** RAG 全链路质量追踪（异步写 ES）。 */
     private Tracing tracing = new Tracing();
 
+    /** 来源权威度与时效性加权。 */
+    private Provenance provenance = new Provenance();
+
+    /** 命中切片的邻块扩展。 */
+    private ExpandNeighbors expandNeighbors = new ExpandNeighbors();
+
     /** CHAT_MODEL 模式下的采样温度（若底层实现忽略则仅依赖 Prompt）。 */
     private double rewriteTemperature = 0.1;
 
@@ -193,5 +199,31 @@ public class RagProperties {
 
         /** 采样率 0.0~1.0；1.0 表示全量记录。 */
         private double sampleRate = 1.0;
+    }
+
+    @Data
+    public static class Provenance {
+
+        /** 是否启用 rerank 后的来源/时效轻量加权。 */
+        private boolean enabled = true;
+
+        /** 权威度权重，建议小于 0.2，避免盖过语义相关性。 */
+        private double authorityAlpha = 0.15;
+
+        /** 时效权重，偏向更新资料。 */
+        private double recencyBeta = 0.10;
+
+        /** 时效指数衰减半衰期（天）。 */
+        private int recencyHalfLifeDays = 180;
+    }
+
+    @Data
+    public static class ExpandNeighbors {
+
+        /** 是否在渲染前拼接同文档相邻切片。 */
+        private boolean enabled = true;
+
+        /** 中心 chunk 前后各取 N 个邻居；1 表示前一块 + 后一块。 */
+        private int neighborSpan = 1;
     }
 }

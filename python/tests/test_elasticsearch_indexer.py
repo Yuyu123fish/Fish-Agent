@@ -42,6 +42,7 @@ class ElasticsearchIndexerMetadataTest(unittest.TestCase):
                 chunks=[TextChunk(text="hello", chunk_index=0, page=1, token_count=3)],
                 vectors=[[0.1, 0.2]],
                 batch_size=20,
+                default_authority=0.7,
             )
 
         source = captured[0]["_source"]
@@ -49,6 +50,11 @@ class ElasticsearchIndexerMetadataTest(unittest.TestCase):
         self.assertEqual("pdf", source["file_type"])
         self.assertEqual(3, source["token_count"])
         self.assertEqual("user-1", source["user_id"])
+        self.assertEqual("hello", source["contextualized_content"])
+        self.assertEqual("", source["context_prefix"])
+        self.assertIn("authority", source)
+        self.assertEqual(0.7, source["authority"])
+        self.assertIn("doc_created_at", source)
 
     def test_bulk_source_public_scope_has_no_user_id(self) -> None:
         captured, fake_bulk, settings = self._capture_bulk()
@@ -75,6 +81,8 @@ class ElasticsearchIndexerMetadataTest(unittest.TestCase):
         self.assertEqual("docx", source["file_type"])
         self.assertEqual(5, source["token_count"])
         self.assertNotIn("user_id", source)
+        self.assertEqual("public doc", source["contextualized_content"])
+        self.assertEqual(1.0, source["authority"])
 
 
 if __name__ == "__main__":
