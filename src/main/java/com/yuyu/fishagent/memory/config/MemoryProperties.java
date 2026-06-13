@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.memory.config;
 
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -72,7 +73,7 @@ public class MemoryProperties {
     /**
      * Redis key 前缀。
      */
-    private String redisKeyPrefix = "fish:memory";
+    private String redisKeyPrefix = RedisKeys.MEMORY;
 
     /**
      * 短期记忆 Redis TTL 天数。

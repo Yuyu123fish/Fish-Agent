@@ -17,7 +17,7 @@ class RagQueryDecomposerTest {
         List<String> out = RagQueryExpand.LlmQueryDecomposer.parseAndValidate(
                 objectMapper, raw, "原始问题", 5, 200, 2);
 
-        assertThat(out).containsExactly("Docker 容器部署最佳实践", "Redis 持久化 RDB 与 AOF 详解");
+        assertThat(out).containsExactly("原始问题", "Docker 容器部署最佳实践");
     }
 
     @Test
@@ -51,7 +51,7 @@ class RagQueryDecomposerTest {
         List<String> out = RagQueryExpand.LlmQueryDecomposer.parseAndValidate(
                 objectMapper, raw, "原始", 2, 200, 4);
 
-        assertThat(out).containsExactly("重复查询内容", "另一个查询内容");
+        assertThat(out).containsExactly("原始", "重复查询内容", "另一个查询内容");
     }
 
     @Test

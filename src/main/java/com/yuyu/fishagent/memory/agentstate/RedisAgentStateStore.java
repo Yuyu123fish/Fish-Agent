@@ -1,6 +1,7 @@
 package com.yuyu.fishagent.memory.agentstate;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -14,7 +15,7 @@ import java.util.List;
 
 /**
  * 基于 Redis 的 Agent 状态存储。
- * Key: {redisKeyPrefix}:agent-state:{sessionId}
+ * Key: fish:memory:agent-state:{sessionId}
  * TTL: 与短期记忆一致。
  */
 @Slf4j
@@ -78,6 +79,9 @@ public class RedisAgentStateStore implements AgentStateStore {
     }
 
     private String key(String sessionId) {
+        if (RedisKeys.MEMORY.equals(properties.getRedisKeyPrefix())) {
+            return RedisKeys.memoryAgentState(sessionId);
+        }
         return properties.getRedisKeyPrefix() + ":agent-state:" + sessionId;
     }
 

@@ -119,6 +119,7 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
+      - "9090:9090"
     environment:
       SPRING_PROFILES_ACTIVE: prod
       DB_URL: jdbc:mysql://mysql:3306/fish_agent?useUnicode=true&characterEncoding=UTF-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false

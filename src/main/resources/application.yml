@@ -53,6 +53,9 @@ spring:
 
   # ── AI 模型 ────────────────────────────────────────────────
   ai:
+    chat:
+      observations:
+        log: false
     # ChatModel 自动配置选择：dashscope | ollama | openai
     # 若未在任意 PropertySource 中设置 spring.ai.model.chat，
     # 由 FishLlmEnvironmentPostProcessor 根据 fish.llm.chat-provider 补全
@@ -107,6 +110,29 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
 
+# ── Management / Observability ───────────────────────────────
+management:
+  server:
+    port: 9090
+  endpoints:
+    web:
+      exposure:
+        include: health,info,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  metrics:
+    distribution:
+      percentiles-histogram:
+        http.server.requests: true
+        fish.chat.turn.duration: true
+        fish.rag.recall.duration: true
+        gen_ai.client.operation.duration: true
+      percentiles:
+        http.server.requests: 0.5,0.95,0.99
+        fish.chat.turn.duration: 0.5,0.95,0.99
+        fish.rag.recall.duration: 0.5,0.95,0.99
+        gen_ai.client.operation.duration: 0.5,0.95,0.99
 # ── Logging ──────────────────────────────────────────────────
 logging:
   level:

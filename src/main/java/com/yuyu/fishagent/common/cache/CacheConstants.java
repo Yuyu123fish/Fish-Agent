@@ -1,5 +1,7 @@
 package com.yuyu.fishagent.common.cache;
 
+import com.yuyu.fishagent.common.redis.RedisKeys;
+
 /**
  * Spring Cache 统一常量。
  * <p>缓存名、Redis key 前缀和 SpEL key 都集中放在这里，避免业务服务里散落魔法字符串。
@@ -10,8 +12,8 @@ public final class CacheConstants {
     private CacheConstants() {
     }
 
-    /** Redis 实际 key 前缀：最终形态为 fish:cache:card:{cacheName}::{业务key}。 */
-    public static final String KEY_PREFIX = "fish:cache:card:";
+    /** Redis 实际 key 前缀：最终形态为 fish:cache:card:{cacheName}:{业务key}。 */
+    public static final String KEY_PREFIX = RedisKeys.CACHE_CARD;
 
     /** 卡片详情缓存：key = userId:cardId。 */
     public static final String CARD_DETAIL = "card-detail";

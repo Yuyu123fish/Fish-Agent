@@ -2,6 +2,7 @@ package com.yuyu.fishagent.rag.pipeline.recall;
 
 import com.yuyu.fishagent.rag.pipeline.expand.RagQueryExpand;
 import com.yuyu.fishagent.rag.pipeline.expand.RagHydeService;
+import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.util.TokenEstimator;
 import com.yuyu.fishagent.rag.pipeline.fusion.RagScoreFusion;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
@@ -14,6 +15,7 @@ import com.yuyu.fishagent.rag.config.RagProperties;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
 import com.yuyu.fishagent.rag.tracing.RagQualityLogger;
 import com.yuyu.fishagent.rag.tracing.RagTraceDocument;
+import io.micrometer.observation.annotation.Observed;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -124,7 +126,7 @@ public final class RagRecall {
     /**
      * 串联：可选查询重写 → 多查询扩展（始终）→ 虚拟线程并发检索 → 合并 → 渲染。
      */
-    public static final class DefaultAugmentation implements Augmentation {
+    public static class DefaultAugmentation implements Augmentation {
 
         private final RagProperties ragProperties;
         private final RagQueryRewrite.QueryRewriter queryRewriter;
@@ -139,6 +141,7 @@ public final class RagRecall {
         private final RagHydeService hydeService;
         private final RagQualityLogger qualityLogger;
         private final CircuitBreakerHelper circuitBreakerHelper;
+        private final ChatMetrics chatMetrics;
 
         public DefaultAugmentation(
                 RagProperties ragProperties,
@@ -153,7 +156,8 @@ public final class RagRecall {
                 RagReranker reranker,
                 RagHydeService hydeService,
                 RagQualityLogger qualityLogger,
-                CircuitBreakerHelper circuitBreakerHelper) {
+                CircuitBreakerHelper circuitBreakerHelper,
+                ChatMetrics chatMetrics) {
             this.ragProperties = ragProperties;
             this.queryRewriter = queryRewriter;
             this.subQueryExpander = subQueryExpander;
@@ -167,6 +171,7 @@ public final class RagRecall {
             this.hydeService = hydeService;
             this.qualityLogger = qualityLogger;
             this.circuitBreakerHelper = circuitBreakerHelper;
+            this.chatMetrics = chatMetrics;
         }
 
         @Override
@@ -180,6 +185,7 @@ public final class RagRecall {
         }
 
         @Override
+        @Observed(name = "rag.recall", contextualName = "RAG recall")
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput,
                                                   String contextHint, int tokenBudget) {
             return doBuildAugmentation(sessionId, rawUserInput, contextHint, tokenBudget);
@@ -327,9 +333,10 @@ public final class RagRecall {
             trace.setCreatedAt(System.currentTimeMillis());
 
             // 候选池阶段：RRF 统一文本路 / 向量路的排名尺度；关闭时回退旧 max-score 合并。
-            List<RecallHit> candidates = ragProperties.getFusion().isEnabled()
-                    ? RagScoreFusion.fuseByRrf(batches, ragProperties.getFusion().getRrfK(), poolSize)
-                    : mergeByMaxScore(batches, poolSize);
+            List<RecallHit> candidates = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.FUSION).record(() ->
+                    ragProperties.getFusion().isEnabled()
+                            ? RagScoreFusion.fuseByRrf(batches, ragProperties.getFusion().getRrfK(), poolSize)
+                            : mergeByMaxScore(batches, poolSize));
             log.debug("[RagRecall] 融合 sid={}, strategy={}, batchesIn={}, rawHits={}, dedupedCandidates={}",
                     sessionId, ragProperties.getFusion().isEnabled() ? "RRF" : "maxScore",
                     batches.size(), recallTotalHits, candidates.size());
@@ -347,7 +354,8 @@ public final class RagRecall {
             // 精排阶段：Reranker 内部封装关闭 / 无 Key / 异常降级，编排层保持直线流程。
             int topN = Math.min(maxFacts, Math.max(1, ragProperties.getRerank().getTopN()));
             long rerankStart = System.currentTimeMillis();
-            List<RecallHit> finalHits = reranker.rerank(textForExpandAndVector, candidates, topN);
+            List<RecallHit> finalHits = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.RERANK).record(() ->
+                    reranker.rerank(textForExpandAndVector, candidates, topN));
             trace.setRerankLatencyMs(System.currentTimeMillis() - rerankStart);
             if (finalHits.isEmpty()) {
                 log.debug("[RagRecall] 精排后无命中 sid={}, rerankInput={}, rerankTopN={}",
@@ -382,10 +390,10 @@ public final class RagRecall {
         private List<RecallHit> safeTextSearch(DocumentSearcher searcher, String sessionId, String sq, int perK) {
             try {
                 // 文本召回统一共享 es-text 熔断器；打开时直接返回空列表，让 RAG 自动降级。
-                return circuitBreakerHelper.executeWithCircuitBreaker(
+                return chatMetrics.ragLegTimer(ChatMetrics.RagLeg.TEXT).record(() -> circuitBreakerHelper.executeWithCircuitBreaker(
                         ResilienceConstants.CB_ES_TEXT,
                         () -> searcher.searchByText(sessionId, sq, perK),
-                        List.of());
+                        List.of()));
             } catch (Exception e) {
                 log.warn("[RagRecall] 子查询文本召回失败 sqLen={}: {}", sq.length(), e.getMessage());
                 return List.of();
@@ -395,10 +403,10 @@ public final class RagRecall {
         private List<RecallHit> safeVectorSearch(DocumentSearcher searcher, String sessionId, String rewritten, int perK) {
             try {
                 // 向量召回包含 Embedding + kNN 查询，统一共享 es-vector 熔断器。
-                return circuitBreakerHelper.executeWithCircuitBreaker(
+                return chatMetrics.ragLegTimer(ChatMetrics.RagLeg.VECTOR).record(() -> circuitBreakerHelper.executeWithCircuitBreaker(
                         ResilienceConstants.CB_ES_VECTOR,
                         () -> searcher.searchByVector(sessionId, rewritten, perK),
-                        List.of());
+                        List.of()));
             } catch (Exception e) {
                 log.warn("[RagRecall] 向量召回失败: {}", e.getMessage());
                 return List.of();
@@ -474,4 +482,5 @@ public final class RagRecall {
                     """;
         }
     }
+
 }

@@ -4,6 +4,7 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.config.AuthProperties;
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -94,6 +95,9 @@ public class RedisSessionManager {
     }
 
     private String sessionKey(String token) {
+        if (RedisKeys.SESSION.equals(authProperties.getSessionKeyPrefix())) {
+            return RedisKeys.session(token);
+        }
         return authProperties.getSessionKeyPrefix() + ":" + token;
     }
 

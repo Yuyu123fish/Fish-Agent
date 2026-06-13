@@ -30,7 +30,8 @@ class RedisCacheConfigTest {
         String computedPrefix = RedisCacheConfig.defaultCacheConfiguration()
                 .getKeyPrefixFor(CacheConstants.CARD_DETAIL);
 
-        assertThat(computedPrefix).isEqualTo(CacheConstants.KEY_PREFIX + CacheConstants.CARD_DETAIL + "::");
+        assertThat(computedPrefix).isEqualTo(CacheConstants.KEY_PREFIX + CacheConstants.CARD_DETAIL + ":");
+        assertThat(computedPrefix).doesNotContain("::");
     }
 
     @Test

@@ -64,6 +64,21 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-web</artifactId>
         </dependency>
+        <!-- Actuator：暴露 health/prometheus，并自动绑定 JVM/HTTP/Cache/Resilience4j 指标。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <!-- @Observed AOP 切面需要 AspectJ runtime；版本由 Spring Boot BOM 管理。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aop</artifactId>
+        </dependency>
+        <!-- Prometheus 抓取端点：/actuator/prometheus。 -->
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
         <!-- Spring AI 阿里云 Agent 框架：用于智能体编排与工具调用 -->
         <dependency>
             <groupId>com.alibaba.cloud.ai</groupId>

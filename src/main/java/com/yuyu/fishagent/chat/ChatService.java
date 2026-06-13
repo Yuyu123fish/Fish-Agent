@@ -11,6 +11,8 @@ import com.yuyu.fishagent.chat.budget.BudgetRequest;
 import com.yuyu.fishagent.chat.budget.ContextBudgetAllocator;
 import com.yuyu.fishagent.chat.budget.ContextWindowTrimmer;
 import com.yuyu.fishagent.common.trace.MdcAsync;
+import com.yuyu.fishagent.common.metrics.ChatMetrics;
+import com.yuyu.fishagent.common.metrics.ChatTurnLifecycle;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.common.util.TokenEstimator;
 import com.yuyu.fishagent.llm.config.FishLlmProperties;
@@ -107,6 +109,8 @@ public class ChatService {
     private final AgentStateStore agentStateStore;
     /** Agent 状态规则更新器，负责工具调用记录和 LLM 推断状态合并。 */
     private final AgentStateUpdater agentStateUpdater;
+    /** Fish 自定义业务指标，通用 JVM/HTTP/Cache 指标由 Actuator 自动采集。 */
+    private final ChatMetrics chatMetrics;
     /** 用于把结构化压缩输出中的 agent_state 节点转为强类型状态。 */
     private final ObjectMapper objectMapper;
     /** 对话模型上下文窗口和预算相关配置。 */
@@ -175,6 +179,7 @@ public class ChatService {
     public String streamChat(String sessionId, String userInput, SseEmitter emitter) {
         final String sid = (sessionId == null || sessionId.isBlank())
                 ? UUID.randomUUID().toString() : sessionId;
+        final ChatTurnLifecycle turnLifecycle = ChatTurnLifecycle.start(chatMetrics);
 
         // ReAct 完成回调可能在非 Servlet 线程执行，ThreadLocal 不会自动传递，此处快照用户上下文供 persist 使用。
         final UserContext streamUserSnapshot = UserContextHolder.get();
@@ -195,12 +200,16 @@ public class ChatService {
 
         if (!rateLimitService.tryAcquireSessionLock(streamUserId, sid)) {
             releaseSseSlotOnce.run();
-            throw new SessionLockedException("此会话正在处理中，请等待回复完成后再发送");
+            SessionLockedException error = new SessionLockedException("此会话正在处理中，请等待回复完成后再发送");
+            turnLifecycle.error(error);
+            throw error;
         }
 
         if (userInput == null || userInput.isBlank()) {
-            safeError(emitter, new IllegalArgumentException("message cannot be empty"));
+            IllegalArgumentException error = new IllegalArgumentException("message cannot be empty");
+            safeError(emitter, error);
             releaseSseSlotOnce.run();
+            turnLifecycle.error(error);
             return sid;
         }
 
@@ -219,6 +228,7 @@ public class ChatService {
             log.error("[ChatService] 组装上下文失败 sid={}", sid, e);
             releaseSseSlotOnce.run();
             safeError(emitter, e);
+            turnLifecycle.error(e);
             return sid;
         }
 
@@ -233,6 +243,7 @@ public class ChatService {
             } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
+            turnLifecycle.error(new IllegalStateException("SSE timeout"));
         });
         emitter.onCompletion(() -> {
             if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
@@ -241,6 +252,7 @@ public class ChatService {
             } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
+            turnLifecycle.error(new IllegalStateException("SSE completed before chat stream finished"));
         });
         emitter.onError(e -> {
             if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
@@ -249,49 +261,52 @@ public class ChatService {
             } finally { MDC.clear(); }
             releaseSseSlotOnce.run();
             if (disposableRef[0] != null) disposableRef[0].dispose();
+            turnLifecycle.error(e);
         });
 
         // 3. 订阅流式输出
         AssistantBuf assistantBuf = new AssistantBuf();
         //调用大模型流式推理
         disposableRef[0] = chatAgent.stream(buildResult.messages(), sid).subscribe(
-                node -> handleNode(node, emitter, assistantBuf),
-                err -> {
-                    // Reactor 回调线程无 MDC，从入口快照恢复以使日志携带 traceId。
-                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
-                    try {
-                        log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
-                    } finally { MDC.clear(); }
-                    safeError(emitter, err);
-                },
-                () -> {
-                    String full = assistantBuf.full.toString().trim();
-                    if (streamUserSnapshot != null) {
-                        UserContextHolder.set(streamUserSnapshot);
-                    }
-                    // Reactor 回调线程无 MDC，从入口快照恢复，使 persist / safeSend 日志携带 traceId。
-                    if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
-                    try {
-                        ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
-                        ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
-                        try {
-                            persist(sid, userInput, full);
-                            shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
-                            updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
-                        } catch (Exception e) {
-                            log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
-                            // persist 失败不阻塞 emitter 关闭
-                        }
-                        safeSend(emitter, "done", full);
-                        emitter.complete();
-                        triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
-                        triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
-                                buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
-                    } finally {
-                        UserContextHolder.clear();
-                        MDC.clear();
-                    }
+            node -> handleNode(node, emitter, assistantBuf),
+            err -> {
+                // Reactor 回调线程无 MDC，从入口快照恢复以使日志携带 traceId。
+                if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+                try {
+                    log.warn("[ChatService] 流式异常 sid={}: {}", sid, err.getMessage());
+                } finally { MDC.clear(); }
+                safeError(emitter, err);
+                turnLifecycle.error(err);
+            },
+            () -> {
+                String full = assistantBuf.full.toString().trim();
+                if (streamUserSnapshot != null) {
+                    UserContextHolder.set(streamUserSnapshot);
                 }
+                // Reactor 回调线程无 MDC，从入口快照恢复，使 persist / safeSend 日志携带 traceId。
+                if (streamMdcSnapshot != null) MDC.setContextMap(streamMdcSnapshot);
+                try {
+                    ChatMessageDTO userMsg = ChatMessageDTO.of("user", userInput);
+                    ChatMessageDTO assistantMsg = full.isBlank() ? null : ChatMessageDTO.of("assistant", full);
+                    try {
+                        persist(sid, userInput, full);
+                        shortTermMemoryService.appendTurnToL1(sid, userMsg, assistantMsg);
+                        updateAgentStateByRules(streamUserId, sid, assistantBuf.nodes);
+                    } catch (Exception e) {
+                        log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
+                        // persist 失败不阻塞 emitter 关闭
+                    }
+                    safeSend(emitter, "done", full);
+                    turnLifecycle.success();
+                    emitter.complete();
+                    triggerLongTermMemoryIngestion(streamUserId, sid, userInput, streamMdcSnapshot);
+                    triggerShortTermMaintenance(streamUserSnapshot, streamUserId, sid,
+                            buildResult.skipMaintenanceCompression(), streamMdcSnapshot);
+                } finally {
+                    UserContextHolder.clear();
+                    MDC.clear();
+                }
+            }
         );
 
         return sid;
@@ -1019,4 +1034,5 @@ public class ChatService {
         }
         emitter.completeWithError(err);
     }
+
 }

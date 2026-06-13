@@ -1,6 +1,7 @@
 package com.yuyu.fishagent.common.ratelimit;
 
 import com.yuyu.fishagent.common.config.RateLimitProperties;
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
@@ -18,12 +19,6 @@ import java.util.List;
 @Service
 @RequiredArgsConstructor
 public class RateLimitService {
-
-    private static final String TOKEN_KEY_PREFIX = "fish:ratelimit:token:";
-    private static final String SSE_KEY_PREFIX = "fish:ratelimit:sse:";
-
-    /** 会话级互斥：与 ChatService 流式对话一一对应，防止同一 sessionId 并发跑两路主循环。 */
-    private static final String SESSION_MUTEX_KEY_PREFIX = "fish:mutex:session:";
 
     /** 会话锁兜底 TTL（秒）：正常路径在 SSE 结束时主动删除，避免进程崩溃导致永久死锁。 */
     private static final int SESSION_MUTEX_TTL_SECONDS = 120;
@@ -104,7 +99,7 @@ public class RateLimitService {
         RateLimitProperties.TokenBucket tb = properties.getTokenBucket();
         RateLimitProperties.SseConcurrent sc = properties.getSseConcurrent();
         try {
-            List<String> tokenKey = List.of(TOKEN_KEY_PREFIX + userId);
+            List<String> tokenKey = List.of(RedisKeys.rateToken(userId));
             long now = System.currentTimeMillis();
             Long allowed = stringRedisTemplate.execute(
                     tokenBucketScript,
@@ -120,7 +115,7 @@ public class RateLimitService {
             }
 
             if (acquireSseSlot) {
-                List<String> sseKey = List.of(SSE_KEY_PREFIX + userId);
+                List<String> sseKey = List.of(RedisKeys.rateSse(userId));
                 Long sseSlot = stringRedisTemplate.execute(
                         sseTryIncrScript,
                         sseKey,
@@ -149,7 +144,7 @@ public class RateLimitService {
         try {
             stringRedisTemplate.execute(
                     sseDecrScript,
-                    Collections.singletonList(SSE_KEY_PREFIX + userId));
+                    Collections.singletonList(RedisKeys.rateSse(userId)));
         } catch (Exception e) {
             log.warn("[RateLimitService] SSE 计数递减失败 userId={}, err={}", userId, e.getMessage());
         }
@@ -169,7 +164,7 @@ public class RateLimitService {
         }
         try {
             Boolean ok = stringRedisTemplate.opsForValue().setIfAbsent(
-                    SESSION_MUTEX_KEY_PREFIX + sessionId,
+                    RedisKeys.mutexSession(sessionId),
                     "1",
                     Duration.ofSeconds(SESSION_MUTEX_TTL_SECONDS));
             return Boolean.TRUE.equals(ok);
@@ -191,7 +186,7 @@ public class RateLimitService {
             return;
         }
         try {
-            stringRedisTemplate.delete(SESSION_MUTEX_KEY_PREFIX + sessionId);
+            stringRedisTemplate.delete(RedisKeys.mutexSession(sessionId));
         } catch (Exception e) {
             log.warn("[RateLimitService] 会话锁释放异常 userId={} sid={}: {}", userId, sessionId, e.getMessage());
         }

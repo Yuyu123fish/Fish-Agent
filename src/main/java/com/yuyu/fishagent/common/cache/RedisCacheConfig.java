@@ -53,7 +53,7 @@ public class RedisCacheConfig implements CachingConfigurer {
      */
     public static RedisCacheConfiguration defaultCacheConfiguration() {
         return RedisCacheConfiguration.defaultCacheConfig()
-                .prefixCacheNameWith(CacheConstants.KEY_PREFIX)
+                .computePrefixWith(cacheName -> CacheConstants.KEY_PREFIX + cacheName + ":")
                 .serializeKeysWith(RedisSerializationContext.SerializationPair
                         .fromSerializer(new StringRedisSerializer()))
                 .serializeValuesWith(RedisSerializationContext.SerializationPair

@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.auth.config;
 
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -19,7 +20,7 @@ public class AuthProperties {
     private long sessionTtlSeconds = 86400;
 
     /** Redis key 前缀，完整 key 为 {@code prefix + ":" + token}。 */
-    private String sessionKeyPrefix = "fish:session";
+    private String sessionKeyPrefix = RedisKeys.SESSION;
 
     /**
      * 逗号分隔的白名单路径前缀；匹配到的请求不校验登录。

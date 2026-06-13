@@ -1,5 +1,6 @@
 package com.yuyu.fishagent.rag.config;
 
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import lombok.Data;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
@@ -38,7 +39,7 @@ public class KnowledgeProperties {
     /**
      * 文档解析任务投递的 Redis Stream 键名（与 Python Worker 约定一致）。
      */
-    private String documentIngestStreamKey = "fish:doc:ingest";
+    private String documentIngestStreamKey = RedisKeys.DOC_STREAM;
 
     /** 孤儿任务补偿参数。 */
     private CompensationProperties compensation = new CompensationProperties();

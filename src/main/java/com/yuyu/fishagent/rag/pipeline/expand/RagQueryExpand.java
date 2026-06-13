@@ -189,7 +189,7 @@ public final class RagQueryExpand {
                 }
                 List<String> out = new ArrayList<>();
                 LinkedHashSet<String> seen = new LinkedHashSet<>();
-                // 原句始终排在首位，保证 BM25 精确匹配不丢失
+                // 原句始终排在首位，保证 BM25 精确匹配腿不因 LLM 改写而丢失。
                 if (seen.add(original)) {
                     out.add(original);
                 }

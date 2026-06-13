@@ -2,6 +2,7 @@ package com.yuyu.fishagent.memory.shortterm;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.yuyu.fishagent.common.redis.RedisKeys;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import lombok.RequiredArgsConstructor;
@@ -119,10 +120,16 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
      * 生成短期摘要 key，按 session 维度隔离。
      */
     private String summaryKey(String sessionId) {
+        if (RedisKeys.MEMORY.equals(properties.getRedisKeyPrefix())) {
+            return RedisKeys.memoryShortSummary(sessionId);
+        }
         return properties.getRedisKeyPrefix() + ":short:" + sessionId + ":summary";
     }
 
     private String snapshotKey(String sessionId) {
+        if (RedisKeys.MEMORY.equals(properties.getRedisKeyPrefix())) {
+            return RedisKeys.memoryShortSnapshot(sessionId);
+        }
         return properties.getRedisKeyPrefix() + ":short:" + sessionId + ":snapshot";
     }
 
@@ -130,6 +137,9 @@ public class RedisShortTermMemoryStore implements ShortTermMemoryStore {
      * 生成最近消息窗口 key，和摘要分开存储便于后续独立调整格式。
      */
     private String messagesKey(String sessionId) {
+        if (RedisKeys.MEMORY.equals(properties.getRedisKeyPrefix())) {
+            return RedisKeys.memoryShortMessages(sessionId);
+        }
         return properties.getRedisKeyPrefix() + ":short:" + sessionId + ":messages";
     }
 
