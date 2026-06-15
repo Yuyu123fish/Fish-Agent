@@ -40,6 +40,8 @@ flowchart TD
     CE -.熔断.-> Pool["降级候选池前 N"]
 ```
 
+
+
 **为什么用 ES 不用纯向量**：ES 同时支持向量索引 + 文本倒排索引，天然支持**文本+向量双路召回**——纯向量对字差别大但语义近的信息可能漏召回，文本路（BM25）保底精确匹配。
 
 **四索引分离**：① 用户记忆（`user_id+source_type=chat+must_not superseded`）；② 用户文档切片（`user_id`）；③ 知识卡片（`user_id+status=confirmed`，三字段 title/content/keywords）；④ 公共知识（无 filter）。不同来源/写入方/权限模型，DDL 独立演进。
@@ -99,10 +101,13 @@ rerank 是语义相关性主信号，booster 是权威/新近的轻量偏置。�
 ## 三、熔断降级
 
 ### 背景
+
 RAG 依赖外部服务（ES 文本/向量召回、DashScope 精排），持续性故障会让每次检索都等超时。
 
 ### 问题与方案
+
 三个 Resilience4j 熔断器：`es-text`（3s 慢/20s wait）、`es-vector`（5s/30s）、`rerank`（5s/30s）。故障率 50%/慢调用 80% 触发 OPEN → 毫秒级快速失败：
+
 - ES 文本/向量路 OPEN → 返回空列表，RAG 降级为单路结果；
 - rerank OPEN → 合成空响应，自动降级到融合池前 N 条。
 
@@ -121,30 +126,37 @@ RAG 依赖外部服务（ES 文本/向量召回、DashScope 精排），持续�
 ## 最难/最有挑战：RRF 解决跨路分数不可比
 
 ### 问题
+
 四路并发（BM25 文本 + cosine 向量）要合并排序选最相关。BM25 可到 20+、cosine 在 0-1，直接合并 BM25 完全压过向量路。
 
 ### 挑战
+
 调线性权重 `α×BM25+β×cosine` 要按查询手动调参，且不同查询最优 α/β 不同。
 
 ### 解决方案
+
 RRF 只看排名不看分：融合分 `Σ 1/(k+rank+1)`，k=60（BEIR 经验最优）。第 1 名 1/61、第 2 名 1/62，排名越靠前贡献越大，不受量纲影响。去重保留原始分最高代表。
 
 ### 面试回答要点
+
 > "BM25 可到 20+、cosine 在 0-1，直接合并等于向量路废了。RRF 核心洞察是不看分数看排名——把所有路排名归一化为倒数，天然可比。k=60 是 BEIR 经验最优，越大头部差距越平滑。比调线性权重简单得多，不用按查询手动调参。"
 
 ---
 
 ## 关联代码速查
 
-| 职责 | 路径 |
-|------|------|
-| 召回编排（核心入口） | `rag/pipeline/recall/RagRecall.java` |
-| 四索引 searcher | `rag/pipeline/recall/{UserMemory,UserKnowledge,UserKnowledgeCard,PublicKnowledge}ElasticsearchSearcher.java` |
-| **权威+新近加权** | `rag/pipeline/recall/ProvenanceBooster.java` |
-| **邻片扩展** | `rag/pipeline/recall/ContextExpander.java` |
-| **来源权威度 + 标签** | `rag/pipeline/recall/SourceAuthority.java`、`MemoryAgeLabel.java` |
-| 查询扩展 / HyDE | `rag/pipeline/expand/RagQueryExpand.java`、`RagHydeService.java` |
-| RRF 融合 / Cross-Encoder 精排 | `rag/pipeline/fusion/RagScoreFusion.java`、`rerank/DashScopeRagReranker.java` |
-| 熔断器 | `common/resilience/CircuitBreakerHelper.java`、`ResilienceConstants.java` |
-| 质量追踪 | `rag/tracing/RagQualityLogger.java`、`RagTraceDocument.java` |
-| RAG 配置 | `rag/config/RagProperties.java`（Recall/Expand/Hyde/Fusion/Rerank/Tracing/Provenance/ExpandNeighbors） |
+
+| 职责                        | 路径                                                                                                           |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 召回编排（核心入口）                | `rag/pipeline/recall/RagRecall.java`                                                                         |
+| 四索引 searcher              | `rag/pipeline/recall/{UserMemory,UserKnowledge,UserKnowledgeCard,PublicKnowledge}ElasticsearchSearcher.java` |
+| **权威+新近加权**               | `rag/pipeline/recall/ProvenanceBooster.java`                                                                 |
+| **邻片扩展**                  | `rag/pipeline/recall/ContextExpander.java`                                                                   |
+| **来源权威度 + 标签**            | `rag/pipeline/recall/SourceAuthority.java`、`MemoryAgeLabel.java`                                             |
+| 查询扩展 / HyDE               | `rag/pipeline/expand/RagQueryExpand.java`、`RagHydeService.java`                                              |
+| RRF 融合 / Cross-Encoder 精排 | `rag/pipeline/fusion/RagScoreFusion.java`、`rerank/DashScopeRagReranker.java`                                 |
+| 熔断器                       | `common/resilience/CircuitBreakerHelper.java`、`ResilienceConstants.java`                                     |
+| 质量追踪                      | `rag/tracing/RagQualityLogger.java`、`RagTraceDocument.java`                                                  |
+| RAG 配置                    | `rag/config/RagProperties.java`（Recall/Expand/Hyde/Fusion/Rerank/Tracing/Provenance/ExpandNeighbors）         |
+
+
