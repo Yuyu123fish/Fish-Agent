@@ -22,6 +22,7 @@
 ## 一、自主规划智能体：ReAct + 三重防死循环
 
 ### 背景
+
 单纯的大模型对话只能"一问一答"，解决不了需要多步骤、需要调外部能力的复杂问题（比如"帮我搜今天长春天气，再总结成一句话"——要先搜再总结）。
 
 ### 问题与方案
@@ -40,6 +41,8 @@ flowchart TD
     LLM -. 第1道 recursionLimit<br/>图节点切换硬上限 .-> X((超限→抛异常))
     LLM -. 第2道 ModelCallLimitHook<br/>runLimit 优雅终止 .-> END
 ```
+
+
 
 相比 `while` 循环，graph 把"状态 A → 状态 B"当成"图节点 A → 节点 B"的移动，**可控性和可扩展性更高**——不用在循环里手写调工具的逻辑、重试策略和异常处理，框架全包了。
 
@@ -65,11 +68,13 @@ protected ReactAgent buildReactAgent(List<ToolCallback> tools, String systemProm
 
 分层哲学是"先礼后兵"——从优雅到强制：
 
-| 层 | 触发 | 用户感受 | 为什么要这一层 |
-|----|------|---------|--------------|
-| `ModelCallLimitHook` | 模型调满 10 次 | 好（自然结束） | 优雅终止，模型有最后一次机会给总结回复 |
-| `recursionLimit` | 图节点切换满 40 次 | 差（异常中断） | 框架级兜底，防 Hook 失效的极端情况 |
-| `AgentStatus` | 用户点"停止生成" | 好（用户预期内） | 调用方控制，给用户取消能力 |
+
+| 层                    | 触发          | 用户感受     | 为什么要这一层              |
+| -------------------- | ----------- | -------- | -------------------- |
+| `ModelCallLimitHook` | 模型调满 10 次   | 好（自然结束）  | 优雅终止，模型有最后一次机会给总结回复  |
+| `recursionLimit`     | 图节点切换满 40 次 | 差（异常中断）  | 框架级兜底，防 Hook 失效的极端情况 |
+| `AgentStatus`        | 用户点"停止生成"   | 好（用户预期内） | 调用方控制，给用户取消能力        |
+
 
 三者叠加确保**无论模型怎么"一根筋"都能终止，且不浪费多余 token**。
 
@@ -92,6 +97,7 @@ protected ReactAgent buildReactAgent(List<ToolCallback> tools, String systemProm
 ## 二、工具结果治理 A/B/C：让单个工具结果吃不爆上下文（本模块旗舰）
 
 ### 背景
+
 系统已有**总量预算**（`TokenEstimator` + `ContextBudgetAllocator` + `emergencyTrim` 兜底），但**单个工具结果没有独立预算**——一个 `file_read` / `log_query` 返回 50KB，会先吃爆总量预算、再被 `emergencyTrim` 乱砍，而且超长内容是"硬塞进上下文"而不是"检索式注入"。虾皮一连串追问"工具结果太长 / 上下文爆炸 / 日志超窗口"，我答不出系统解。于是给**单个工具结果封顶**，并给超大结果一条"分片 + 按需回取"的招牌路径。
 
 ### 问题与方案
@@ -111,6 +117,8 @@ flowchart TD
     FIT --> OUT[注入上下文 + 落 TurnTrace disposition]
 ```
 
+
+
 入口 `ToolResultGovernor.govern`：
 
 ```java
@@ -129,7 +137,6 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
 ```
 
 - **A 单结果预算 + 智能截断（兜底）**：head + tail 保留（头有 schema/状态码，尾有最新日志/结论），中间写中文 marker。**关键是字符预算从文本样本反推，不硬编码**：
-
   ```java
   // 采样 2000 字符反推 charsPerToken（CJK≈1.5，Latin≈4），clamp 到 [1.0, 4.0]
   int sampleTokens = estimate(text.substring(0, min(len, 2000)));
@@ -138,27 +145,29 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
   // head 55% + tail 45%，中间插 marker，while 循环收敛到 ≤ budget
   while (estimate(governed) > budget && head > 20 && tail > 20) { head *= 0.9; tail *= 0.9; ... }
   ```
-
 - **B 结果摘要（中档）**：超 8K token → `memoryChatModel`（低温、禁工具）做忠实摘要，摘要仍受 A 封顶；模型不可用或失败**自动回落 A**，绝不影响工具主链路。
 - **C 检索式注入（招牌）**：超 20K token 的巨量结果**不截断、不摘要** → `LargeResultScratchStore` 按 turnId 分片（token-aware，每片收敛到 `scratch-chunk-tokens=900`）入单轮 scratch（Redis `fish:scratch:{turnId}` + TTL，Redis 不可用走进程内兜底）→ 只注入 top-k 预览 + 检索提示；并给 agent 一个 `search_large_result` 工具按关键词回取（带单轮调用上限防滥用，空 scratch 不计数）。
 
 **协同与可观测**：
+
 - `ToolRegistry` 改为 **turn-bound 动态 callback**：有 turnId 的真实链路每轮重建工具集（`ChatAgent.stream(...,turnId)` → `buildReactAgent(allCallbacks(turnId))`），把 scratch key、调用上限、TurnTrace 绑到同一轮；`wrap` 内 set/restore `TraceContext` 透传 turnId。
 - `TurnTrace.Node` 新增 `disposition`（truncated/summarized/retrieved），治理节点落 trace，**可追溯"为什么这条只有片段"**。
 - A/B/C 产物最终都进 `ContextBudgetAllocator`——**per-result 封顶 = 单结果吃不爆总量**。
 
 配置（`fish.tool.result.*`）：
 
-| 配置 | 默认 | 说明 |
-|------|------|------|
-| `budget-tokens` | 4096 | 单结果 token 预算（可按工具 override） |
-| `summarize-threshold-tokens` | 8192 | 超此走 B 摘要 |
-| `summarize-enabled` | true | 关闭则巨量结果只走 A/C |
-| `scratch-large-threshold-tokens` | 20480 | 超此走 C scratch |
-| `scratch-chunk-tokens` | 900 | scratch 分片 token |
-| `scratch-search-max-calls` | 5 | `search_large_result` 单轮调用上限 |
-| `scratch-inject-top-k` | 3 | 注入预览片段数 |
-| `scratch-ttl` | 30m | scratch TTL 兜底 |
+
+| 配置                               | 默认    | 说明                           |
+| -------------------------------- | ----- | ---------------------------- |
+| `budget-tokens`                  | 4096  | 单结果 token 预算（可按工具 override）  |
+| `summarize-threshold-tokens`     | 8192  | 超此走 B 摘要                     |
+| `summarize-enabled`              | true  | 关闭则巨量结果只走 A/C                |
+| `scratch-large-threshold-tokens` | 20480 | 超此走 C scratch                |
+| `scratch-chunk-tokens`           | 900   | scratch 分片 token             |
+| `scratch-search-max-calls`       | 5     | `search_large_result` 单轮调用上限 |
+| `scratch-inject-top-k`           | 3     | 注入预览片段数                      |
+| `scratch-ttl`                    | 30m   | scratch TTL 兜底               |
+
 
 ### 踩过的坑：中文预算 BLOCKER（首轮审查揪出）
 
@@ -193,9 +202,11 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
 ## 三、Tool Calling SPI 扩展：零侵入加工具
 
 ### 背景
+
 工具会越来越多（搜索、抓取、天气、地理、文件、邮件……），如果每加一个工具都去改 Agent 核心代码，核心会越来越臃肿、耦合越来越重。
 
 ### 问题与方案
+
 用 **SPI 思想**解耦"工具定义"和"工具注册"：定义一个统一接口 `AgentToolProvider`（`name()` + `build()` + `enabled()`），实际工具实现它：
 
 - 启动期 `ToolRegistry.init()` 遍历所有 `AgentToolProvider` Bean，逐个 `build()` 构造 `ToolCallback`；
@@ -221,9 +232,11 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
 ## 四、LLM 熔断保护：快速失败替代重试
 
 ### 背景
+
 LLM API 可能持续故障（超时、429 限流、连接断开）。如果对每次失败都重试，流式场景下会导致**重复 token 计费**和**连接异常**，越重试越糟。
 
 ### 问题与方案
+
 用 Resilience4j 熔断器 `CircuitBreakerOperator` 保护**整条 Flux 生命周期**，用"快速失败 + 自动恢复"替代重试：
 
 ```java
@@ -239,8 +252,9 @@ return agent.stream(messages, config)
 llm 熔断器配置（`application.yml`）：滑窗 10 次、最少 5 次才计算、**故障率 50% 或慢调用率 80%** → OPEN；**冷却 60s** 自动转 HALF-OPEN 放行 3 个探测，成功则恢复 CLOSED；慢调用阈值 15s。
 
 两个关键设计：
-- **`transformDeferred` 而非 `transform`**：`transform` 在构建时应用 operator（此时 CB 可能还是 CLOSED），`transformDeferred` 在**订阅时**才应用——每次订阅重新检查 CB 状态，保证 OPEN 时立即拦截。
-- **`onErrorResume(CallNotPermittedException.class, ...)`**：只捕获熔断拒绝走降级，其它异常（网络错误、LLM 格式错误）正常传播到上层回调，不吞异常。
+
+- `**transformDeferred` 而非 `transform`**：`transform` 在构建时应用 operator（此时 CB 可能还是 CLOSED），`transformDeferred` 在**订阅时**才应用——每次订阅重新检查 CB 状态，保证 OPEN 时立即拦截。
+- `**onErrorResume(CallNotPermittedException.class, ...)`**：只捕获熔断拒绝走降级，其它异常（网络错误、LLM 格式错误）正常传播到上层回调，不吞异常。
 
 （RAG 侧另有 es-text / es-vector / rerank 三个熔断器，见模块 7。）
 
@@ -262,17 +276,20 @@ LLM 流式响应重试会导致重复 token 或连接异常；熔断器用"快�
 
 ## 关联代码速查
 
-| 职责 | 路径 |
-|------|------|
-| ReAct Agent 流式入口 + 熔断 + turn-bound + 逐节点 trace | `agent/ChatAgent.java` |
-| Agent 抽象基类 + 三重防死循环构建工厂 | `agent/BaseAgent.java` |
-| 状态机 | `agent/AgentStatus.java` |
-| 工具 SPI 接口 / 注册中心（turn-bound callback） | `agent/tool/AgentToolProvider.java`、`agent/tool/ToolRegistry.java` |
-| **工具结果治理总入口（A/B/C 路由）** | `agent/tool/result/ToolResultGovernor.java` |
-| **单结果预算 + token-aware 截断** | `agent/tool/result/ToolResultBudgeter.java` |
-| **结果摘要** | `agent/tool/result/ToolResultSummarizer.java` |
-| **巨量结果分片 scratch + 检索** | `agent/tool/result/LargeResultScratchStore.java`、`agent/tool/builtin/SearchLargeResultToolProvider.java` |
-| 工具治理配置 | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.*`） |
-| LLM 熔断器常量 / 降级文案 | `common/resilience/ResilienceConstants.java` |
-| token 估算（CJK 1.5 / Latin 4 字符每 token） | `common/util/TokenEstimator.java` |
-| 逐节点 trace 记录 + disposition | `common/trace/TraceCollector.java`、`common/trace/TurnTrace.java` |
+
+| 职责                                             | 路径                                                                                                       |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
+| ReAct Agent 流式入口 + 熔断 + turn-bound + 逐节点 trace | `agent/ChatAgent.java`                                                                                   |
+| Agent 抽象基类 + 三重防死循环构建工厂                        | `agent/BaseAgent.java`                                                                                   |
+| 状态机                                            | `agent/AgentStatus.java`                                                                                 |
+| 工具 SPI 接口 / 注册中心（turn-bound callback）          | `agent/tool/AgentToolProvider.java`、`agent/tool/ToolRegistry.java`                                       |
+| **工具结果治理总入口（A/B/C 路由）**                        | `agent/tool/result/ToolResultGovernor.java`                                                              |
+| **单结果预算 + token-aware 截断**                     | `agent/tool/result/ToolResultBudgeter.java`                                                              |
+| **结果摘要**                                       | `agent/tool/result/ToolResultSummarizer.java`                                                            |
+| **巨量结果分片 scratch + 检索**                        | `agent/tool/result/LargeResultScratchStore.java`、`agent/tool/builtin/SearchLargeResultToolProvider.java` |
+| 工具治理配置                                         | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.`*）                                      |
+| LLM 熔断器常量 / 降级文案                               | `common/resilience/ResilienceConstants.java`                                                             |
+| token 估算（CJK 1.5 / Latin 4 字符每 token）          | `common/util/TokenEstimator.java`                                                                        |
+| 逐节点 trace 记录 + disposition                     | `common/trace/TraceCollector.java`、`common/trace/TurnTrace.java`                                         |
+
+
