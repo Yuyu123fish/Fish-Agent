@@ -1,0 +1,94 @@
+{
+  "cases": [
+    {
+      "id": "long-session-reimbursement",
+      "windowSize": 20,
+      "syntheticNoiseTurns": 140,
+      "session": [
+        {"role": "user", "content": "6/1 提过的服务器迁移方案要保留，后面还会继续讨论。", "createdAt": 1780000000000},
+        {"role": "assistant", "content": "已记录服务器迁移方案需要保留。", "createdAt": 1780000001000},
+        {"role": "user", "content": "报销流程先查一下，我要问张三。", "createdAt": 1780000002000},
+        {"role": "assistant", "content": "我会关注张三和报销流程。", "createdAt": 1780000003000},
+        {"role": "user", "content": "Q3目标也先开一个话题。", "createdAt": 1780000004000},
+        {"role": "assistant", "content": "Q3目标保持活跃。", "createdAt": 1780000005000},
+        {"role": "user", "content": "临时消息 1", "createdAt": 1780000006000},
+        {"role": "assistant", "content": "收到 1", "createdAt": 1780000007000},
+        {"role": "user", "content": "临时消息 2", "createdAt": 1780000008000},
+        {"role": "assistant", "content": "收到 2", "createdAt": 1780000009000},
+        {"role": "user", "content": "临时消息 3", "createdAt": 1780000010000},
+        {"role": "assistant", "content": "收到 3", "createdAt": 1780000011000},
+        {"role": "user", "content": "临时消息 4", "createdAt": 1780000012000},
+        {"role": "assistant", "content": "收到 4", "createdAt": 1780000013000},
+        {"role": "user", "content": "临时消息 5", "createdAt": 1780000014000},
+        {"role": "assistant", "content": "收到 5", "createdAt": 1780000015000},
+        {"role": "user", "content": "临时消息 6", "createdAt": 1780000016000},
+        {"role": "assistant", "content": "收到 6", "createdAt": 1780000017000},
+        {"role": "user", "content": "临时消息 7", "createdAt": 1780000018000},
+        {"role": "assistant", "content": "收到 7", "createdAt": 1780000019000},
+        {"role": "user", "content": "财务回复了，报销流程已经完成。", "createdAt": 1780000020000},
+        {"role": "assistant", "content": "报销话题应关闭，Q3目标继续。", "createdAt": 1780000021000}
+      ],
+      "expectedKeyEntities": ["张三", "报销流程", "Q3目标"],
+      "expectedActiveTopics": [
+        {"topic": "报销", "status": "CLOSED"},
+        {"topic": "Q3目标", "status": "ACTIVE"}
+      ],
+      "expectedPendingIntents": ["继续 Q3 目标规划"],
+      "mustNotLose": ["6/1 提过的服务器迁移方案"]
+    },
+    {
+      "id": "long-session-debugging",
+      "windowSize": 12,
+      "syntheticNoiseTurns": 140,
+      "session": [
+        {"role": "user", "content": "早期结论：Redis 游标 lastCompressedAt 不能丢。", "createdAt": 1780100000000},
+        {"role": "assistant", "content": "已记录 lastCompressedAt。", "createdAt": 1780100001000},
+        {"role": "user", "content": "排查短期记忆压缩。", "createdAt": 1780100002000},
+        {"role": "assistant", "content": "开始排查。", "createdAt": 1780100003000},
+        {"role": "user", "content": "噪声 A", "createdAt": 1780100004000},
+        {"role": "assistant", "content": "收到 A", "createdAt": 1780100005000},
+        {"role": "user", "content": "噪声 B", "createdAt": 1780100006000},
+        {"role": "assistant", "content": "收到 B", "createdAt": 1780100007000},
+        {"role": "user", "content": "噪声 C", "createdAt": 1780100008000},
+        {"role": "assistant", "content": "收到 C", "createdAt": 1780100009000},
+        {"role": "user", "content": "问题定位到 buildCalibration 拼全量历史。", "createdAt": 1780100010000},
+        {"role": "assistant", "content": "建议改为 buildReconciliation。", "createdAt": 1780100011000},
+        {"role": "user", "content": "这项排查已解决，保留对账方案。", "createdAt": 1780100012000},
+        {"role": "assistant", "content": "压缩撑爆话题应关闭，后续做 eval。", "createdAt": 1780100013000}
+      ],
+      "expectedKeyEntities": ["lastCompressedAt", "buildCalibration", "buildReconciliation"],
+      "expectedActiveTopics": [
+        {"topic": "短期记忆压缩", "status": "CLOSED"},
+        {"topic": "summary eval", "status": "ACTIVE"}
+      ],
+      "expectedPendingIntents": ["补 summary eval"],
+      "mustNotLose": ["Redis 游标 lastCompressedAt 不能丢"]
+    },
+    {
+      "id": "long-session-product",
+      "windowSize": 10,
+      "syntheticNoiseTurns": 140,
+      "session": [
+        {"role": "user", "content": "早期需求：知识卡片审核页要保留批量确认能力。", "createdAt": 1780200000000},
+        {"role": "assistant", "content": "已记录批量确认能力。", "createdAt": 1780200001000},
+        {"role": "user", "content": "先讨论卡片关系发现。", "createdAt": 1780200002000},
+        {"role": "assistant", "content": "关系发现话题开启。", "createdAt": 1780200003000},
+        {"role": "user", "content": "过程消息 1", "createdAt": 1780200004000},
+        {"role": "assistant", "content": "收到", "createdAt": 1780200005000},
+        {"role": "user", "content": "过程消息 2", "createdAt": 1780200006000},
+        {"role": "assistant", "content": "收到", "createdAt": 1780200007000},
+        {"role": "user", "content": "关系发现已经上线，接下来关注 ReviewStatsPanel。", "createdAt": 1780200008000},
+        {"role": "assistant", "content": "关系发现关闭，ReviewStatsPanel 继续。", "createdAt": 1780200009000},
+        {"role": "user", "content": "待办是补充审核统计空态。", "createdAt": 1780200010000},
+        {"role": "assistant", "content": "保留待办：审核统计空态。", "createdAt": 1780200011000}
+      ],
+      "expectedKeyEntities": ["知识卡片", "ReviewStatsPanel"],
+      "expectedActiveTopics": [
+        {"topic": "卡片关系发现", "status": "CLOSED"},
+        {"topic": "审核统计", "status": "ACTIVE"}
+      ],
+      "expectedPendingIntents": ["补充审核统计空态"],
+      "mustNotLose": ["审核页要保留批量确认能力"]
+    }
+  ]
+}

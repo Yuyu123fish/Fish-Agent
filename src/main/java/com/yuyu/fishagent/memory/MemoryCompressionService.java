@@ -68,7 +68,7 @@ public class MemoryCompressionService {
     /**
      * 截取最近 N 条消息作为滑动窗口，避免下一轮对话上下文无限增长。
      */
-    static List<ChatMessageDTO> recentMessages(List<ChatMessageDTO> chatHistory, int windowSize) {
+    public static List<ChatMessageDTO> recentMessages(List<ChatMessageDTO> chatHistory, int windowSize) {
         if (chatHistory == null || chatHistory.isEmpty() || windowSize <= 0) {
             return List.of();
         }
@@ -113,12 +113,12 @@ public class MemoryCompressionService {
     }
 
     /**
-     * 结构化压缩：支持增量/校准两种模式。每 3 次增量后触发一次全量校准，降低摘要漂移。
+     * 结构化压缩：支持增量/对账两种模式。每 3 次增量后触发一次窗口对账，降低摘要漂移。
      *
      * @param sessionId 会话 ID
      * @param currentSummary 当前结构化摘要，首次压缩可为空
      * @param newMessages 窗口外新增消息，增量模式使用
-     * @param fullHistory 全量历史，校准模式和窗口裁剪使用
+     * @param fullHistory 全量历史，仅用于窗口裁剪、游标记录和 snapshot 计数，不再拼入对账 prompt
      * @param incrementalCount 当前增量次数
      * @return 模型解析后的结构化压缩结果
      */
@@ -136,23 +136,27 @@ public class MemoryCompressionService {
             throw new IllegalArgumentException("fullHistory cannot be empty");
         }
 
-        boolean calibration = incrementalCount >= 3;
-        Prompt prompt = calibration
-                ? promptBuilder.buildCalibration(safeFull, properties.getShortTermWindowSize())
+        List<ChatMessageDTO> recentWindow = recentMessages(safeFull, properties.getShortTermWindowSize());
+        boolean reconciliation = incrementalCount >= 3;
+        Prompt prompt = reconciliation
+                ? promptBuilder.buildReconciliation(
+                currentSummary,
+                recentWindow,
+                properties.getShortTermWindowSize())
                 : promptBuilder.buildIncremental(currentSummary,
                 newMessages == null ? List.of() : newMessages,
                 properties.getShortTermWindowSize());
 
         log.debug("[MemoryCompressionService] 结构化压缩开始 sid={}, mode={}, incCount={}",
-                sessionId, calibration ? "校准" : "增量", incrementalCount);
+                sessionId, reconciliation ? "对账" : "增量", incrementalCount);
         ChatResponse response = chatModel.call(prompt);
         String output = response.getResult().getOutput().getText();
         MemoryResponseParser.StructuredCompressionResult result = responseParser.parseStructured(output);
 
-        int newCount = calibration ? 0 : incrementalCount + 1;
+        int newCount = reconciliation ? 0 : incrementalCount + 1;
         ShortTermMemorySnapshot snapshot = new ShortTermMemorySnapshot(
                 result.summary(),
-                recentMessages(safeFull, properties.getShortTermWindowSize()),
+                recentWindow,
                 result.keyExcerpts(),
                 newCount,
                 lastMessageCreatedAt(safeFull),
@@ -161,7 +165,7 @@ public class MemoryCompressionService {
         shortTermMemoryStore.save(sessionId, snapshot);
         log.debug("[MemoryCompressionService] 结构化压缩完成 sid={}, mode={}, newCount={}, topics={}, excerpts={}",
                 sessionId,
-                calibration ? "校准" : "增量",
+                reconciliation ? "对账" : "增量",
                 newCount,
                 result.summary().activeTopics() == null ? 0 : result.summary().activeTopics().size(),
                 result.keyExcerpts() == null ? 0 : result.keyExcerpts().size());

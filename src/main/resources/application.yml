@@ -306,6 +306,10 @@ fish:
   eval:
     golden-set-path: ${FISH_EVAL_GOLDEN_SET_PATH:classpath:eval/golden-rag.json}
     judge-model: memoryChatModel
+    summary:
+      live-enabled: ${FISH_EVAL_SUMMARY_LIVE_ENABLED:false}
+      golden-set-path: ${FISH_EVAL_SUMMARY_GOLDEN_SET_PATH:classpath:eval/golden-summary.json}
+      early-info-retention-ratio-threshold: ${FISH_EVAL_SUMMARY_EARLY_RETENTION_RATIO_THRESHOLD:0.9}
   trace:
     enabled: ${FISH_TRACE_ENABLED:true}
     es-index: ${FISH_TRACE_ES_INDEX:fish-trace}
