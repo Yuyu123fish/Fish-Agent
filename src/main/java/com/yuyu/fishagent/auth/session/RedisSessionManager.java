@@ -95,10 +95,7 @@ public class RedisSessionManager {
     }
 
     private String sessionKey(String token) {
-        if (RedisKeys.SESSION.equals(authProperties.getSessionKeyPrefix())) {
-            return RedisKeys.session(token);
-        }
-        return authProperties.getSessionKeyPrefix() + ":" + token;
+        return RedisKeys.session(token);
     }
 
     private Duration ttl() {

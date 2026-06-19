@@ -3,11 +3,9 @@ package com.yuyu.fishagent.card.service;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.yuyu.fishagent.card.entity.CardKeyword;
 import com.yuyu.fishagent.card.entity.Keyword;
-import com.yuyu.fishagent.card.entity.KeywordRelation;
 import com.yuyu.fishagent.card.entity.KnowledgeCard;
 import com.yuyu.fishagent.card.mapper.CardKeywordMapper;
 import com.yuyu.fishagent.card.mapper.KeywordMapper;
-import com.yuyu.fishagent.card.mapper.KeywordRelationMapper;
 import com.yuyu.fishagent.card.mapper.KnowledgeCardMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -17,10 +15,8 @@ import org.springframework.transaction.annotation.Transactional;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 /**
  * 关键词实体服务：维护 keywords JSON 与 keyword/card_keyword 归一化索引之间的一致性。
@@ -34,7 +30,6 @@ public class KeywordService {
 
     private final KeywordMapper keywordMapper;
     private final CardKeywordMapper cardKeywordMapper;
-    private final KeywordRelationMapper keywordRelationMapper;
     private final KnowledgeCardMapper knowledgeCardMapper;
 
     /**
@@ -95,46 +90,6 @@ public class KeywordService {
             return List.of();
         }
         return keywordMapper.selectByUserId(userId);
-    }
-
-    /**
-     * 获取关键词被哪些卡片分组使用，供后续 prompt 或分析扩展。
-     */
-    public Map<String, Set<String>> getKeywordGroupMap(Long userId) {
-        Map<String, Set<String>> out = new LinkedHashMap<>();
-        if (userId == null) {
-            return out;
-        }
-        List<KnowledgeCard> cards = knowledgeCardMapper.selectList(Wrappers.<KnowledgeCard>lambdaQuery()
-                .eq(KnowledgeCard::getUserId, userId));
-        for (KnowledgeCard card : cards) {
-            List<Keyword> keywords = keywordMapper.selectKeywordsByCardId(card.getId());
-            for (Keyword keyword : keywords) {
-                out.computeIfAbsent(keyword.getName(), k -> new LinkedHashSet<>());
-                if (card.getGroupName() != null && !card.getGroupName().isBlank()) {
-                    out.get(keyword.getName()).add(card.getGroupName());
-                }
-            }
-        }
-        return out;
-    }
-
-    @Transactional
-    public void addKeywordRelation(Long userId, Long fromId, Long toId, String type, Float confidence) {
-        if (userId == null || fromId == null || toId == null || fromId.equals(toId)) {
-            return;
-        }
-        KeywordRelation relation = new KeywordRelation();
-        relation.setUserId(userId);
-        relation.setFromKeywordId(fromId);
-        relation.setToKeywordId(toId);
-        relation.setRelationType(normalizeRelationType(type));
-        relation.setConfidence(confidence == null ? 1.0f : Math.max(0.0f, Math.min(1.0f, confidence)));
-        try {
-            keywordRelationMapper.insert(relation);
-        } catch (DuplicateKeyException ignored) {
-            // 关系唯一索引保证幂等。
-        }
     }
 
     /**
@@ -215,16 +170,5 @@ public class KeywordService {
 
     private static String normalizeSource(String source) {
         return CardKeyword.SOURCE_MANUAL.equals(source) ? CardKeyword.SOURCE_MANUAL : CardKeyword.SOURCE_AI;
-    }
-
-    private static String normalizeRelationType(String type) {
-        String s = type == null ? "" : type.trim();
-        if (Keyword.TYPE_SYNONYM.equals(s)
-                || Keyword.TYPE_BROADER.equals(s)
-                || Keyword.TYPE_NARROWER.equals(s)
-                || Keyword.TYPE_RELATED.equals(s)) {
-            return s;
-        }
-        return Keyword.TYPE_RELATED;
     }
 }

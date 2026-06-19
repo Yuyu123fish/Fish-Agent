@@ -154,19 +154,6 @@ public class CardGroupService {
         return path;
     }
 
-    /**
-     * 递归收集某分组及其所有后代分组 ID，供图谱过滤。
-     */
-    public List<Long> collectDescendantIds(Long groupId) {
-        List<Long> ids = new ArrayList<>();
-        if (groupId == null) {
-            return ids;
-        }
-        ids.add(groupId);
-        collectChildren(groupId, ids, 10);
-        return ids;
-    }
-
     // ─── 数据迁移 ───
 
     /**
@@ -212,16 +199,6 @@ public class CardGroupService {
     }
 
     // ─── 内部方法 ───
-
-    private void collectChildren(Long parentId, List<Long> ids, int maxDepth) {
-        if (maxDepth <= 0) return;
-        List<CardGroup> children = cardGroupMapper.selectList(Wrappers.<CardGroup>lambdaQuery()
-                .eq(CardGroup::getParentId, parentId));
-        for (CardGroup child : children) {
-            ids.add(child.getId());
-            collectChildren(child.getId(), ids, maxDepth - 1);
-        }
-    }
 
     private List<GroupTreeNode> buildTree(List<CardGroup> allGroups) {
         Map<Long, List<CardGroup>> byParent = new LinkedHashMap<>();

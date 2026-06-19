@@ -15,8 +15,5 @@ public enum AgentStatus {
     FINISHED,
 
     /** 执行过程中抛出异常。 */
-    ERROR,
-
-    /** 触达最大迭代次数被强制中止。 */
-    MAX_ITER_REACHED
+    ERROR
 }

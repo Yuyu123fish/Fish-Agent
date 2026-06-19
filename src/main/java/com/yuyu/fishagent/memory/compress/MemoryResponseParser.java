@@ -2,7 +2,6 @@ package com.yuyu.fishagent.memory.compress;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.yuyu.fishagent.memory.dto.MemoryCompressionResult;
 import com.yuyu.fishagent.memory.shortterm.KeyExcerpt;
 import com.yuyu.fishagent.memory.shortterm.StructuredSummary;
 import com.yuyu.fishagent.memory.shortterm.TopicSegment;
@@ -34,50 +33,6 @@ public class MemoryResponseParser {
             List<KeyExcerpt> keyExcerpts,
             JsonNode agentStateNode
     ) {
-    }
-
-    /**
-     * 解析并校验模型输出的记忆 JSON。
-     *
-     * @param rawText 模型原始输出，允许包裹在 markdown 代码块中
-     * @return 已清洗的短期摘要与长期事实
-     * @throws IllegalArgumentException 输出为空、不是 JSON 或字段类型不符合约束时抛出
-     */
-    public MemoryCompressionResult parse(String rawText) {
-        if (rawText == null || rawText.isBlank()) {
-            throw new IllegalArgumentException("memory model output cannot be empty");
-        }
-
-        // 先移除可能的 markdown 代码块标记
-        JsonNode root;
-        try {
-            root = objectMapper.readTree(stripCodeFence(rawText));
-        } catch (Exception e) {
-            throw new IllegalArgumentException("memory model output is not valid JSON", e);
-        }
-
-        // 严格校验 JSON 结构和字段类型
-        JsonNode summaryNode = root.get("short_term_summary");
-        JsonNode factsNode = root.get("long_term_facts");
-        if (!root.isObject() || summaryNode == null || !summaryNode.isTextual()) {
-            throw new IllegalArgumentException("memory model output must contain string short_term_summary");
-        }
-        if (factsNode == null || !factsNode.isArray()) {
-            throw new IllegalArgumentException("memory model output must contain array long_term_facts");
-        }
-
-        // 提取并清洗长期事实列表
-        List<String> facts = new ArrayList<>();
-        for (JsonNode factNode : factsNode) {
-            if (!factNode.isTextual()) {
-                throw new IllegalArgumentException("long_term_facts must only contain strings");
-            }
-            String fact = factNode.asText().trim();
-            if (!fact.isEmpty()) {
-                facts.add(fact);
-            }
-        }
-        return new MemoryCompressionResult(summaryNode.asText().trim(), facts);
     }
 
     /**

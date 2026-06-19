@@ -3,7 +3,6 @@ package com.yuyu.fishagent.memory.shortterm;
 import com.yuyu.fishagent.common.dto.ChatMessageDTO;
 import com.yuyu.fishagent.memory.MemoryCompressionService;
 import com.yuyu.fishagent.memory.config.MemoryProperties;
-import com.yuyu.fishagent.memory.dto.MemoryCompressionRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -84,7 +83,6 @@ class ShortTermMemoryServiceTest {
         assertThat(result.snapshot().recentMessages())
                 .extracting(ChatMessageDTO::getContent)
                 .containsExactly("message-4", "message-5", "message-6");
-        verify(compression, never()).compress(org.mockito.ArgumentMatchers.any(MemoryCompressionRequest.class));
         verify(l1).save("sid", result.snapshot());
         verify(l2).save(7L, "sid", result.snapshot());
     }

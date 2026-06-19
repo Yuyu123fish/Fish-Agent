@@ -18,14 +18,6 @@ public interface KeywordRelationMapper extends BaseMapper<KeywordRelation> {
             SELECT *
             FROM keyword_relation
             WHERE user_id = #{userId}
-              AND (from_keyword_id = #{keywordId} OR to_keyword_id = #{keywordId})
-            """)
-    List<KeywordRelation> selectByKeywordId(@Param("userId") Long userId, @Param("keywordId") Long keywordId);
-
-    @Select("""
-            SELECT *
-            FROM keyword_relation
-            WHERE user_id = #{userId}
             """)
     List<KeywordRelation> selectByUserId(@Param("userId") Long userId);
 }

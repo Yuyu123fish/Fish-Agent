@@ -24,11 +24,6 @@ public class LongTermMemoryDeduplicator {
 
     private final MemoryProperties properties;
 
-    public boolean isDuplicate(ElasticsearchOperations operations, IndexCoordinates index,
-                               String userId, List<Float> candidateVector) {
-        return !findSimilar(operations, index, userId, candidateVector, properties.getDedup().getK()).isEmpty();
-    }
-
     public List<SimilarFact> findSimilar(ElasticsearchOperations operations, IndexCoordinates index,
                                          String userId, List<Float> candidateVector, int requestedK) {
         MemoryProperties.Dedup cfg = properties.getDedup();
@@ -71,17 +66,6 @@ public class LongTermMemoryDeduplicator {
             log.warn("[LongTermMemoryDeduplicator] 查重失败，按无相似事实处理: {}", e.getMessage());
             return List.of();
         }
-    }
-
-    public static double maxCosine(List<Float> query, List<List<Float>> candidates) {
-        double max = 0.0;
-        if (candidates == null) {
-            return max;
-        }
-        for (List<Float> candidate : candidates) {
-            max = Math.max(max, cosine(query, candidate));
-        }
-        return max;
     }
 
     public static double cosine(List<Float> a, List<Float> b) {

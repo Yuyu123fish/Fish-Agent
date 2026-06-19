@@ -25,23 +25,6 @@ public class MemoryPromptBuilder {
     private static final int MAX_COMPRESSION_MSG_LEN = 1500;
     private final ObjectMapper objectMapper;
 
-    private static final String SYSTEM_PROMPT = """
-            你是 Fish-Agent 的短期记忆摘要专家。你的任务是阅读 chat_history，
-            压缩出可继续对话的短期摘要。
-
-            提取规则：
-            1. short_term_summary 只保留本轮上下文继续对话所需的信息，避免复述无关细节。
-            2. 本流程不负责长期记忆录入，long_term_facts 必须始终返回空数组。
-            3. 不要把身份、偏好等长期事实写入 long_term_facts，它们由主动录入链路单独处理。
-            4. 只输出严格 JSON，不要输出 Markdown、解释或代码块。
-
-            输出格式：
-            {
-              "short_term_summary": "string",
-              "long_term_facts": []
-            }
-            """;
-
     private static final String INCREMENTAL_SYSTEM_PROMPT = """
             你是 Fish-Agent 的短期记忆摘要专家。
 
@@ -113,19 +96,6 @@ public class MemoryPromptBuilder {
 
             输出格式与增量模式一致。
             """;
-
-    /**
-     * 构建记忆压缩模型的输入。
-     *
-     * @param chatHistory 原始对话历史，按时间正序排列
-     * @return 包含记忆专家系统提示词与格式化历史记录的 Prompt
-     */
-    public Prompt build(List<ChatMessageDTO> chatHistory) {
-        List<org.springframework.ai.chat.messages.Message> messages = new ArrayList<>(2);
-        messages.add(new SystemMessage(SYSTEM_PROMPT));
-        messages.add(new UserMessage(formatHistory(chatHistory)));
-        return new Prompt(messages);
-    }
 
     /**
      * 增量压缩：基于现有摘要 + 窗口外新增消息。

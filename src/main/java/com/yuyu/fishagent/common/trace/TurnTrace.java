@@ -45,8 +45,6 @@ public class TurnTrace {
     @Field(name = "memory_injected", type = FieldType.Text)
     private String memoryInjected;
 
-    private TokenUsage tokenUsage = new TokenUsage();
-
     /**
      * NodeOutput 可能由 Reactor 不同线程回调，列表必须允许并发追加。
      *
@@ -71,11 +69,5 @@ public class TurnTrace {
         private String status;
         /** 工具结果治理处置方式：truncated / summarized / retrieved；普通节点为空。 */
         private String disposition;
-    }
-
-    @Data
-    public static class TokenUsage {
-        private long prompt;
-        private long completion;
     }
 }
