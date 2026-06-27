@@ -120,6 +120,10 @@ class IngestProcessor:
             )
             file_type = self._file_type(task.file_name, content_type)
 
+            # 文档真实创建时间（写入 ES doc_created_at 供 recency 使用）；取不到则回退入库时间
+            created_dt = parser.created_at(content, task.file_name or "upload")
+            doc_created_at_ms = int(created_dt.timestamp() * 1000) if created_dt else None
+
             # 幂等：须在 index_name 确定后调用；同一 task_id 重处理前先清空该 doc_id 下旧切片
             self._es.delete_by_doc_id(index_name, task.task_id)
 
@@ -138,9 +142,13 @@ class IngestProcessor:
                     if scope_private
                     else self._settings.fish_rag_authority_public
                 ),
+                doc_created_at_ms=doc_created_at_ms,
             )
 
             # ---- 步骤 7: 更新成功 ----
+            # 先翻 ready=True，再 CAS SUCCESS：mark_doc_ready 失败会抛出（内部重试耗尽），
+            # 由 process() 的 except 把任务转到 FAILED（可重传/补偿），绝不静默 SUCCESS 但 ready=false 永久不可见
+            self._es.mark_doc_ready(index_name, task.task_id)
             success = self._mark_success(
                 task.task_id,
                 chunk_count=len(chunks),

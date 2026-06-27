@@ -82,7 +82,14 @@ spring:
       api-key: ${DEEPSEEK_API_KEY:}
       chat:
         options:
-          model: ${DEEPSEEK_CHAT_MODEL:deepseek-chat}
+          # deepseek-chat（V3）将于 2026/07/24 弃用，已切换 deepseek-v4-flash（DeepSeek-V4-Flash）。
+          # 显式关闭思考模式：保持与旧 deepseek-chat 一致的非思考行为，并规避 V4 思考模式与
+          # tool calling 的已知冲突（reasoning_content 与 function calling 协同异常）。
+          # thinking 经 OpenAiChatOptions.extraBody 平铺到请求体顶层（DeepSeek 要求的位置）。
+          model: ${DEEPSEEK_CHAT_MODEL:deepseek-v4-flash}
+          extra-body:
+            thinking:
+              type: disabled
 
   # ── Web / 邮件 ─────────────────────────────────────────────
   servlet:
@@ -188,8 +195,11 @@ fish:
     context-window-tokens: ${FISH_LLM_CONTEXT_WINDOW_TOKENS:32768}
     output-reserve-tokens: ${FISH_LLM_OUTPUT_RESERVE_TOKENS:2048}
     safety-margin-ratio: ${FISH_LLM_SAFETY_MARGIN_RATIO:0.2}
+    # V4-Flash 原生 1M 上下文（284B 总参 / 13B 激活 MoE，OpenAI 兼容，无需特殊开关）。
+    # 注意：官方与社区反馈 ~300K 之后质量/延迟下降，实际打包目标由 safety-margin-ratio 收敛
+    # （见 ContextBudgetAllocator），1M 此处仅作为「模型允许的硬上限」。
     model-context-overrides:
-      deepseek-chat: 65536
+      deepseek-v4-flash: 1048576
       qwen-plus: 131072
       qwen-turbo: 131072
       qwen3-235b-a22b: 131072
@@ -231,7 +241,7 @@ fish:
     # 记忆压缩 / 长期事实抽取专用 Chat（DEEPSEEK 下为独立 OpenAiChatModel）
     chat:
       enabled: ${MEMORY_CHAT_ENABLED:true}
-      model: ${MEMORY_CHAT_MODEL:deepseek-chat}
+      model: ${MEMORY_CHAT_MODEL:deepseek-v4-flash}
       temperature: ${MEMORY_CHAT_TEMPERATURE:0.1}
 
   # ── RAG 检索增强 ───────────────────────────────────────────
@@ -324,6 +334,14 @@ fish:
       scratch-chunk-tokens: ${FISH_TOOL_RESULT_SCRATCH_CHUNK_TOKENS:900}
       scratch-inject-top-k: ${FISH_TOOL_RESULT_SCRATCH_INJECT_TOP_K:3}
       scratch-ttl: ${FISH_TOOL_RESULT_SCRATCH_TTL:30m}
+      # 窗口比例自缩放（方案 B）：有效预算 = max(上面的绝对下限, 当前窗口×分数)。
+      # 1M 窗口下 budget≈31K / summarize≈126K / scratch≈262K → 正常网页/搜索结果放行不治理，
+      # 摘要/scratch 退化为只对付真正巨型结果；关闭或窗口未知时退回绝对下限（小窗模型不回退）。
+      window-relative:
+        enabled: ${FISH_TOOL_RESULT_WINDOW_RELATIVE_ENABLED:true}
+        budget-fraction: ${FISH_TOOL_RESULT_BUDGET_FRACTION:0.03}
+        summarize-fraction: ${FISH_TOOL_RESULT_SUMMARIZE_FRACTION:0.12}
+        scratch-fraction: ${FISH_TOOL_RESULT_SCRATCH_FRACTION:0.25}
 
   # ── 外部工具 ───────────────────────────────────────────────
   tools:

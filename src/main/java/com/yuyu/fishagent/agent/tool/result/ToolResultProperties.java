@@ -46,13 +46,68 @@ public class ToolResultProperties {
     /** C：scratch key TTL，通常覆盖单轮生命周期即可。 */
     private Duration scratchTtl = Duration.ofMinutes(30);
 
+    // ── 窗口比例自缩放（方案 B）：有效预算随模型上下文窗口放大 ──
+    // 动机：绝对阈值是为 V3 的 64K 窗口调的；V4 迁到 1M 后未同步，导致正常网页/搜索结果
+    // （5–15K token）也被有损截断/摘要。改为 max(绝对下限, 窗口×分数) 后，大窗下正常结果放行，
+    // 小窗/未知窗退回绝对下限（今天的行为），零回归。
+    /** 是否启用按窗口比例缩放；关闭则一律用绝对下限。 */
+    private boolean windowRelativeEnabled = true;
+
+    /** 单结果预算占窗口的分数（1M 下约 30K，正常工具结果放行不截断）。 */
+    private double budgetFraction = 0.03;
+
+    /** 摘要阈值占窗口的分数（1M 下约 126K，只对巨型结果有损压缩）。 */
+    private double summarizeFraction = 0.12;
+
+    /** scratch 卸载阈值占窗口的分数（1M 下约 256K，只对巨型日志走 re-search）。 */
+    private double scratchFraction = 0.25;
+
     /** 各工具可覆盖单结果预算，key 为工具名。 */
     private Map<String, Integer> budgetOverrides = new HashMap<>();
 
-    public int budgetTokensFor(String toolName) {
-        if (toolName == null || toolName.isBlank()) {
-            return Math.max(1, budgetTokens);
+    /**
+     * 当前窗口下的有效单结果预算。
+     *
+     * <p>优先级：显式 per-tool override（运营刻意设的硬上限，不缩放）&gt; 按窗口缩放的默认值。
+     * 窗口未知(≤0)或关闭缩放时，退回绝对下限 {@link #budgetTokens}。</p>
+     *
+     * @param toolName      工具名，可为 null
+     * @param contextWindow 当前模型有效上下文窗口（token），≤0 表示未知
+     */
+    public int effectiveBudgetTokens(String toolName, int contextWindow) {
+        if (toolName != null && !toolName.isBlank() && budgetOverrides.containsKey(toolName)) {
+            return Math.max(1, budgetOverrides.get(toolName));
         }
-        return Math.max(1, budgetOverrides.getOrDefault(toolName, budgetTokens));
+        return scaledOrFloor(budgetTokens, budgetFraction, contextWindow);
+    }
+
+    /**
+     * 当前窗口下的有效摘要阈值。
+     *
+     * @param contextWindow 当前模型有效上下文窗口（token），≤0 表示未知
+     */
+    public int effectiveSummarizeThreshold(int contextWindow) {
+        return scaledOrFloor(summarizeThresholdTokens, summarizeFraction, contextWindow);
+    }
+
+    /**
+     * 当前窗口下的有效 scratch 卸载阈值。
+     *
+     * @param contextWindow 当前模型有效上下文窗口（token），≤0 表示未知
+     */
+    public int effectiveScratchThreshold(int contextWindow) {
+        return scaledOrFloor(scratchLargeThresholdTokens, scratchFraction, contextWindow);
+    }
+
+    /**
+     * max(绝对下限, 窗口×分数)；关闭缩放或窗口未知时仅返回下限。
+     */
+    private int scaledOrFloor(int floor, double fraction, int contextWindow) {
+        int safeFloor = Math.max(1, floor);
+        if (!windowRelativeEnabled || contextWindow <= 0) {
+            return safeFloor;
+        }
+        double fractionClamped = Math.max(0.0, fraction);
+        return Math.max(safeFloor, (int) Math.floor(contextWindow * fractionClamped));
     }
 }

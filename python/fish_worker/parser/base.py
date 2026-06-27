@@ -39,3 +39,11 @@ class BaseParser(ABC):
             tmp_dir:  可选的临时目录。传入时 parser 在此目录写临时文件，
                       不传则 parser 自行创建（由 processor 传入以复用目录）。
         """
+
+    def created_at(self, content: bytes, filename: str) -> datetime | None:
+        """文档真实创建时间（写入 ES doc_created_at，供 recency 衰减使用）。
+
+        与 parse() 分离：取元数据与解析正文互不影响；不支持元数据的格式保持 None，
+        调用方回退到入库时间。默认 None，由支持元数据的子类（Docx/PDF）覆盖。
+        """
+        return None

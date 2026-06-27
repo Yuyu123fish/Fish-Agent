@@ -32,3 +32,13 @@ class DocxParser(BaseParser):
                     elements.append(RawElement(text=row_text, page=None, element_type="Table"))
 
         return elements
+
+    def created_at(self, content: bytes, filename: str) -> datetime | None:
+        """从 docx 核心属性取真实创建时间（core_properties.created）。"""
+        from docx import Document
+
+        try:
+            doc = Document(io.BytesIO(content))
+            return doc.core_properties.created
+        except Exception:
+            return None

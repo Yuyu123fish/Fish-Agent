@@ -68,6 +68,12 @@ public class RagTraceDocument {
     @Field(name = "rerank_latency_ms", type = FieldType.Long)
     private long rerankLatencyMs;
 
+    @Field(name = "provenance_latency_ms", type = FieldType.Long)
+    private long provenanceLatencyMs;
+
+    @Field(name = "expand_latency_ms", type = FieldType.Long)
+    private long expandLatencyMs;
+
     @Field(name = "total_latency_ms", type = FieldType.Long)
     private long totalLatencyMs;
 

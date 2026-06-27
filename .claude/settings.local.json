@@ -24,7 +24,13 @@
       "PowerShell(Get-ChildItem -Path \"D:\\\\1_Backend\\\\Fish-Agent\\\\document\" -Recurse -File | ForEach-Object { $_.FullName.Replace\\(\"D:\\\\1_Backend\\\\Fish-Agent\\\\\", \"\"\\) } | Sort-Object)",
       "Bash(dir *)",
       "Bash(findstr /i card)",
-      "Bash(findstr card *)"
+      "Bash(findstr card *)",
+      "Bash(mkdir -p /tmp/sai-openai)",
+      "Read(//tmp/**)",
+      "Bash(rm -rf *)",
+      "Bash(unzip -o -q \"C:/Users/YUYU/.m2/repository/org/springframework/ai/spring-ai-openai/1.1.4/spring-ai-openai-1.1.4.jar\")",
+      "Bash(mkdir -p /tmp/sai-deepseek)",
+      "Bash(unzip -o -q \"C:/Users/YUYU/.m2/repository/org/springframework/ai/spring-ai-deepseek/1.1.4/spring-ai-deepseek-1.1.4.jar\")"
     ]
   }
 }

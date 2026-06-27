@@ -384,13 +384,23 @@ public final class RagRecall {
             trace.setRerankInputCount(candidates.size());
 
             // 精排阶段：Reranker 内部封装关闭 / 无 Key / 异常降级，编排层保持直线流程。
+            // rerank / provenance / expand 三段分别计时：rerank_latency_ms 只测精排，
+            // provenance/expand 各自独立，避免与 Micrometer leg=rerank 口径不一致。
             int topN = Math.min(maxFacts, Math.max(1, ragProperties.getRerank().getTopN()));
             long rerankStart = System.currentTimeMillis();
-            List<RecallHit> finalHits = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.RERANK).record(() ->
+            List<RecallHit> reranked = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.RERANK).record(() ->
                     reranker.rerank(textForExpandAndVector, candidates, topN));
-            finalHits = provenanceBooster.boost(finalHits, System.currentTimeMillis());
-            finalHits = contextExpander.expand(finalHits);
             trace.setRerankLatencyMs(System.currentTimeMillis() - rerankStart);
+
+            long provenanceStart = System.currentTimeMillis();
+            List<RecallHit> provenance = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.PROVENANCE).record(() ->
+                    provenanceBooster.boost(reranked, System.currentTimeMillis()));
+            trace.setProvenanceLatencyMs(System.currentTimeMillis() - provenanceStart);
+
+            long expandStart = System.currentTimeMillis();
+            List<RecallHit> finalHits = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.EXPAND).record(() ->
+                    contextExpander.expand(provenance));
+            trace.setExpandLatencyMs(System.currentTimeMillis() - expandStart);
             if (finalHits.isEmpty()) {
                 log.debug("[RagRecall] 精排后无命中 sid={}, rerankInput={}, rerankTopN={}",
                         sessionId, candidates.size(), topN);

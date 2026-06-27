@@ -128,6 +128,13 @@ class Settings(BaseSettings):
     fish_worker_embed_backoff_max: float = Field(
         default=30.0, validation_alias="FISH_WORKER_EMBED_BACKOFF_MAX"
     )
+    # B2：mark_doc_ready 翻 ready 的重试（ES 抖动自愈；耗尽则抛出，让任务留在可恢复态而非静默 SUCCESS）
+    fish_worker_mark_ready_max_attempts: int = Field(
+        default=3, validation_alias="FISH_WORKER_MARK_READY_MAX_ATTEMPTS"
+    )
+    fish_worker_mark_ready_backoff_base: float = Field(
+        default=0.5, validation_alias="FISH_WORKER_MARK_READY_BACKOFF_BASE"
+    )
     fish_rag_contextual_indexing_enabled: bool = Field(
         default=True, validation_alias="FISH_RAG_CONTEXTUAL_INDEXING_ENABLED"
     )

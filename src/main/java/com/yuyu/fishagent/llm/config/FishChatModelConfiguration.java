@@ -16,6 +16,8 @@ import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.core.env.Environment;
 
+import java.util.Map;
+
 /**
  * 将「业务选择的对话后端」收敛为容器内唯一的 {@link ChatModel} {@code @Primary} Bean，
  * 避免在同时引入 DashScope、Ollama、OpenAI-compatible（DeepSeek）starter 时出现多个 {@link ChatModel} 而无法按类型注入。
@@ -101,6 +103,9 @@ public class FishChatModelConfiguration {
                 OpenAiChatOptions opts = OpenAiChatOptions.builder()
                         .model(chatProps.getModel())
                         .temperature(chatProps.getTemperature())
+                        // 关闭思考模式：保持非思考行为，规避 V4 thinking 与 tool calling 的已知冲突。
+                        // thinking 经 extraBody 平铺到请求体顶层（DeepSeek 要求的位置）。
+                        .extraBody(Map.of("thinking", Map.of("type", "disabled")))
                         .build();
                 log.info("[FishLlm] 记忆链路独立模型 provider=DEEPSEEK model={} temperature={}",
                         chatProps.getModel(), chatProps.getTemperature());

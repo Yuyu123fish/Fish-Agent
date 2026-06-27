@@ -7,6 +7,7 @@ import com.yuyu.fishagent.agent.config.AgentProperties;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.ratelimit.RateLimitService;
+import com.yuyu.fishagent.llm.config.ActiveChatModelContext;
 import com.yuyu.fishagent.llm.config.FishLlmProperties;
 import com.yuyu.fishagent.memory.LongTermMemoryIngestionService;
 import com.yuyu.fishagent.memory.MemoryCompressionService;
@@ -18,7 +19,6 @@ import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.Test;
-import org.springframework.core.env.Environment;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.publisher.Flux;
 
@@ -57,8 +57,9 @@ class ChatServiceObservabilityTest {
         RagRecall.Augmentation augmentation = mock(RagRecall.Augmentation.class);
         when(augmentation.buildAugmentation(anyString(), anyString(), any(), anyInt())).thenReturn(Optional.empty());
 
-        Environment environment = mock(Environment.class);
-        when(environment.getProperty("spring.ai.openai.chat.options.model")).thenReturn("deepseek-chat");
+        ActiveChatModelContext activeChatModelContext = mock(ActiveChatModelContext.class);
+        when(activeChatModelContext.activeModelName()).thenReturn("deepseek-v4-flash");
+        when(activeChatModelContext.effectiveContextWindow()).thenReturn(32_768);
 
         ChatService service = new ChatService(
                 chatAgent,
@@ -76,7 +77,7 @@ class ChatServiceObservabilityTest {
                 new ChatMetrics(registry),
                 new ObjectMapper(),
                 new FishLlmProperties(),
-                environment,
+                activeChatModelContext,
                 new com.yuyu.fishagent.common.trace.TraceCollector(new com.yuyu.fishagent.common.trace.TraceProperties()),
                 mock(com.yuyu.fishagent.common.trace.TraceEsWriter.class),
                 mock(com.yuyu.fishagent.agent.tool.result.ToolResultGovernor.class));

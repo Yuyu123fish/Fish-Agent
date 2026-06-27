@@ -26,7 +26,7 @@ public class MemoryProperties {
         /**
          * 独立记忆模型名称（OpenAI 兼容 / DeepSeek 路径下有效）；默认与常见主模型一致。
          */
-        private String model = "deepseek-chat";
+        private String model = "deepseek-v4-flash";
         /**
          * 记忆链路调用温度，摘要与事实抽取宜偏低以保证稳定。
          */

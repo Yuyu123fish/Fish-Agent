@@ -32,4 +32,18 @@ class ChatMetricsTest {
                 .tag("leg", "rerank")
                 .timer()).isNotNull();
     }
+
+    @Test
+    void shouldRegisterRagLegTimersForProvenanceAndExpand() {
+        SimpleMeterRegistry registry = new SimpleMeterRegistry();
+        ChatMetrics metrics = new ChatMetrics(registry);
+
+        metrics.ragLegTimer(ChatMetrics.RagLeg.PROVENANCE).record(() -> {
+        });
+        metrics.ragLegTimer(ChatMetrics.RagLeg.EXPAND).record(() -> {
+        });
+
+        assertThat(registry.find("fish.rag.recall.duration").tag("leg", "provenance").timer()).isNotNull();
+        assertThat(registry.find("fish.rag.recall.duration").tag("leg", "expand").timer()).isNotNull();
+    }
 }

@@ -46,7 +46,9 @@ public class PublicKnowledgeElasticsearchSearcher implements RagRecall.DocumentS
                         // 新文档优先命中 contextualized_content；保留 content 兼容历史切片。
                         .should(s -> s.match(m -> m.field("contextualized_content").query(subQueryText)))
                         .should(s -> s.match(m -> m.field("content").query(subQueryText)))
-                        .minimumShouldMatch("1")))
+                        .minimumShouldMatch("1")
+                        // 半批可见性：排除入库中(ready=false)的切片；存量切片无该字段，must_not 不命中故仍可见
+                        .mustNot(m -> m.term(t -> t.field("ready").value(false)))))
                 .build();
         return mapHits(operations.search(query, PublicKnowledgeDocument.class, index), RagRecall.RecallSource.TEXT);
     }
@@ -81,7 +83,10 @@ public class PublicKnowledgeElasticsearchSearcher implements RagRecall.DocumentS
                         .field("embedding")
                         .queryVector(queryVector)
                         .k(k)
-                        .numCandidates(numCandidates))
+                        .numCandidates(numCandidates)
+                        // 半批可见性：kNN 预过滤同样排除入库中(ready=false)的切片
+                        .filter(f -> f.bool(nb -> nb
+                                .mustNot(mm -> mm.term(t -> t.field("ready").value(false))))))
                 .build();
         return mapHits(operations.search(q, PublicKnowledgeDocument.class, index), RagRecall.RecallSource.VECTOR);
     }

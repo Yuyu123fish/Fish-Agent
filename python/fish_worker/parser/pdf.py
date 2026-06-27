@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import tempfile
+from datetime import datetime, timedelta, timezone
 
 import fitz  # PyMuPDF
 import pytesseract
@@ -39,6 +40,42 @@ _CID_RATIO_THRESHOLD = 0.05
 _GARBLED_RATIO_THRESHOLD = 0.05
 _NOISY_SCRIPT_RATIO_THRESHOLD = 0.12
 _CID_PATTERN = re.compile(r"\(cid:\d+\)")
+
+# PDF 日期串（PDF 1.7 §7.9.4）：D:YYYYMMDDHHmmSS 后跟可选偏移——Z、+HH'mm'、-HH'mm'，或无偏移。
+# 例：D:20260101120000Z / D:20260101120000+08'00' / D:20250615103000（无偏移，视为 UTC）
+# 末尾 $ 拒绝尾随垃圾（如 D:20250615103000Z00）。
+_PDF_DATE_PATTERN = re.compile(
+    r"D:(?P<y>\d{4})(?P<mo>\d{2})(?P<d>\d{2})(?P<H>\d{2})(?P<mi>\d{2})(?P<s>\d{2})"
+    r"(?:Z|(?P<sign>[+\-])(?P<ohh>\d{2})?'?(?P<omm>\d{2})?'?)?$"
+)
+
+
+def parse_pdf_date(text: str | None) -> datetime | None:
+    """解析 PDF 元数据日期串 D:YYYYMMDDHHmmSS[OHH'mm'] → aware datetime；非法/空返回 None。
+
+    无偏移时按 PDF 规范视为 UTC（与 PyMuPDF 默认一致）。
+    """
+    if not text:
+        return None
+    m = _PDF_DATE_PATTERN.match(text.strip())
+    if not m:
+        return None
+    if m.group("sign") is not None:
+        sign = 1 if m.group("sign") == "+" else -1
+        ohh = int(m.group("ohh") or 0)
+        omm = int(m.group("omm") or 0)
+        tz = timezone(sign * timedelta(hours=ohh, minutes=omm))
+    else:
+        # Z 或无偏移 → UTC
+        tz = timezone.utc
+    try:
+        return datetime(
+            int(m.group("y")), int(m.group("mo")), int(m.group("d")),
+            int(m.group("H")), int(m.group("mi")), int(m.group("s")),
+            tzinfo=tz,
+        )
+    except ValueError:
+        return None
 
 
 def count_cid_residuals(text: str) -> int:
@@ -191,6 +228,17 @@ class PdfParser(BaseParser):
                     os.rmdir(own_dir)
                 except OSError:
                     pass
+
+    def created_at(self, content: bytes, filename: str) -> datetime | None:
+        """从 PDF 元数据取真实创建时间（fitz.metadata['creation']）。"""
+        try:
+            doc = fitz.open(stream=content, filetype="pdf")
+            try:
+                return parse_pdf_date(doc.metadata.get("creation"))
+            finally:
+                doc.close()
+        except Exception:
+            return None
 
     @staticmethod
     def _extract_text_layer(doc: "fitz.Document") -> str:

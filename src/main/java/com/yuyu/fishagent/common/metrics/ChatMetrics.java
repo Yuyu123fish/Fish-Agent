@@ -27,7 +27,9 @@ public class ChatMetrics {
         TEXT("text"),
         VECTOR("vector"),
         FUSION("fusion"),
-        RERANK("rerank");
+        RERANK("rerank"),
+        PROVENANCE("provenance"),
+        EXPAND("expand");
 
         private final String tagValue;
 

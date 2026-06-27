@@ -69,6 +69,7 @@ class ElasticsearchIndexer:
         vectors: list[list[float]],
         batch_size: int,
         default_authority: float = 1.0,
+        doc_created_at_ms: int | None = None,
     ) -> None:
         """
         Args:
@@ -105,9 +106,11 @@ class ElasticsearchIndexer:
                     "file_type": file_type,
                     "token_count": ch.token_count,
                     "authority": float(default_authority),
-                    "doc_created_at": now_ms,
+                    "doc_created_at": doc_created_at_ms if doc_created_at_ms is not None else now_ms,
                     "context_prefix": ch.context_prefix or "",
                     "contextualized_content": ch.contextualized_text or ch.text,
+                    # 入库阶段对检索隐藏；全部写入完成且 SUCCESS 后由 mark_doc_ready 翻 True
+                    "ready": False,
                 }
                 if scope_private:
                     # 个人知识库索引不含 source_type（与 fish-user-memory 对话事实索引分离）
@@ -131,3 +134,43 @@ class ElasticsearchIndexer:
                 # 任意批次失败 → 中断整个任务，之前写入的批次不回滚
                 raise RuntimeError(f"Elasticsearch bulk failed at offset {i}: {failed!r}")
             log.debug("ES bulk indexed %s docs (batch slice)", ok)
+
+    def mark_doc_ready(self, index_name: str, doc_id: str) -> None:
+        """全部 chunk 写入完成后，把该 doc_id 的 chunk ready 翻为 True（对召回可见）。
+
+        检索侧用 must_not(term ready=false) 过滤，故入库时 ready=False 的半批/处理中切片
+        对召回不可见，直到这里整体翻 True。
+
+        失败语义：ES 抖动时按指数退避重试；重试耗尽则抛出——由 processor 把任务留在可恢复态
+        （PROCESSING→FAILED，可被 XAUTOCLAIM 重处理或 OrphanTaskCompensation 清理），
+        绝不出现「MySQL=SUCCESS 但 ready=false 永久不可见」的静默数据丢失。
+        """
+        max_attempts = max(1, int(getattr(self._s, "fish_worker_mark_ready_max_attempts", 3)))
+        backoff_base = float(getattr(self._s, "fish_worker_mark_ready_backoff_base", 0.5))
+        last_exc: Exception | None = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                # bulk 用 refresh=False 写入，先强制 refresh，否则 update_by_query 命中不到刚写入的切片
+                self._client.indices.refresh(index=index_name)
+                # 不用 conflicts="proceed"：默认 abort 让版本冲突抛出 → 重试或转 FAILED，
+                # 避免"部分 chunk 翻了、部分没翻"的半可见（正是 B2 要消除的失败模式）
+                self._client.update_by_query(
+                    index=index_name,
+                    query={"term": {"doc_id": doc_id}},
+                    refresh=True,
+                    script={"source": "ctx._source.ready = true;", "lang": "painless"},
+                )
+                log.debug("ES mark_doc_ready doc_id=%s index=%s attempt=%s", doc_id, index_name, attempt)
+                return
+            except Exception as e:
+                last_exc = e
+                log.warning(
+                    "ES mark_doc_ready attempt %s/%s failed doc_id=%s index=%s: %s",
+                    attempt, max_attempts, doc_id, index_name, e,
+                )
+                if attempt < max_attempts:
+                    time.sleep(backoff_base * (2 ** (attempt - 1)))
+        log.error("ES mark_doc_ready exhausted retries doc_id=%s index=%s", doc_id, index_name)
+        raise RuntimeError(
+            f"mark_doc_ready failed for doc_id={doc_id} index={index_name} after {max_attempts} attempts"
+        ) from last_exc

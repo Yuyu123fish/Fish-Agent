@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]**。**工具结果经 `ToolResultGovernor` 三层治理 [v6.2]：A 单结果 token 预算头尾截断（兜底）→ B LLM 摘要（中档）→ C 巨量结果分片入 Redis scratch + `search_large_result` 按需回取（招牌）；字符预算从 `TokenEstimator` 采样反推 CJK/Latin 密度，保证中文结果不绕过预算。turn-bound 动态 callback 把 scratch/trace 绑到同一轮 [v6.1/v6.2]。**（v5.3 的字符级 `TextTruncator` 治理已被 v6.2 取代，仅作无 governor 时的测试兼容回退。）
+基于 **Spring AI Alibaba ReAct** 的智能体引擎，以"思考-行动-观察"循环驱动 LLM 自主决策调用工具，通过 **SPI 插件化体系**零侵入扩展工具，三重机制防止死循环。**LLM 流式调用经 `CircuitBreakerOperator` 熔断保护 [v5.0]**。**工具结果经 `ToolResultGovernor` 三层治理 [v6.2]：A 单结果 token 预算头尾截断（兜底）→ B LLM 摘要（中档）→ C 巨量结果分片入 Redis scratch + `search_large_result` 按需回取（招牌）；字符预算从 `TokenEstimator` 采样反推 CJK/Latin 密度，保证中文结果不绕过预算。turn-bound 动态 callback 把 scratch/trace 绑到同一轮 [v6.1/v6.2]。**（v5.3 的字符级 `TextTruncator` 治理已被 v6.2 取代，仅作无 governor 时的测试兼容回退。）**[v6.3] 三档阈值随当前模型窗口自缩放（`max(下限, 窗口×分数)`）——V4-Flash 1M 下 budget≈31K，正常网页/搜索结果原样放行不再被误杀；窗口未知或关缩放退回绝对下限（= v6.2 行为，零回归）。**
 
 ---
 
@@ -179,10 +179,14 @@ v5.3 的字符级 `TextTruncator` 治理已被 v6.2 取代（`ToolRegistry.gover
 ```java
 public GovernedResult govern(String turnId, String toolName, String toolInput, String result) {
     int originalTokens = TokenEstimator.estimate(result);
-    int budget = properties.budgetTokensFor(toolName);          // 默认 4096，可按工具 override
+    // [v6.3] 三档阈值随当前模型窗口自缩放：max(绝对下限, 窗口×分数)；窗口未知→0→退回绝对下限(v6.2 行为)
+    int window = activeChatModelContext == null ? 0 : activeChatModelContext.effectiveContextWindow();
+    int budget = properties.effectiveBudgetTokens(toolName, window);          // 1M 下 ~31K，正常结果放行不截断
+    int scratchThreshold = properties.effectiveScratchThreshold(window);      // 1M 下 ~262K
+    int summarizeThreshold = properties.effectiveSummarizeThreshold(window);  // 1M 下 ~126K
 
-    // C 检索式注入：tokens ≥ max(budget+1, 20480) 且 turnId 存在且非 search_large_result
-    if (scratchEnabled && originalTokens >= Math.max(budget + 1, scratchLargeThreshold)
+    // C 检索式注入：tokens ≥ max(budget+1, scratchThreshold) 且 turnId 存在且非 search_large_result
+    if (scratchEnabled && originalTokens >= Math.max(budget + 1, scratchThreshold)
             && turnId != null && !"search_large_result".equals(toolName)) {
         StoreResult stored = scratchStore.store(turnId, toolName, result);   // 分片入 Redis scratch
         if (stored.stored()) {
@@ -190,7 +194,7 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
             return fit(injected, budget, "retrieved");
         }
     }
-    // B 摘要：tokens ≥ max(budget+1, 8192) → memoryChatModel 忠实摘要，失败回落 A
+    // B 摘要：tokens ≥ max(budget+1, summarizeThreshold) → memoryChatModel 忠实摘要，失败回落 A
     if (summarizeEnabled && originalTokens >= Math.max(budget + 1, summarizeThreshold)) {
         String summary = summarizer.summarize(toolName, toolInput, result, budget);
         if (summary != null && !summary.isBlank()) return fit(summary, budget, "summarized");
@@ -222,6 +226,10 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
 | `scratch-search-max-calls` | 5 | `search_large_result` 单轮调用上限 |
 | `scratch-inject-top-k` | 3 | 注入预览片段数 |
 | `scratch-ttl` | 30m | scratch TTL 兜底 |
+| **`window-relative.enabled` [v6.3]** | true | 开启按窗口比例缩放；关则全用绝对下限（= v6.2） |
+| **`window-relative.budget-fraction` [v6.3]** | 0.03 | budget = max(下限, 窗口×分数)，1M 下 ~31K |
+| **`window-relative.summarize-fraction` [v6.3]** | 0.12 | 摘要阈值，1M 下 ~126K |
+| **`window-relative.scratch-fraction` [v6.3]** | 0.25 | scratch 阈值，1M 下 ~262K |
 
 **协同**：
 - `ToolRegistry.allCallbacks(turnId)` 每轮重建，`wrap` 绑定 turnId 到 `TraceContext`；
@@ -429,6 +437,10 @@ Tool description 是 LLM 决定调用哪个工具的唯一依据，项目遵循�
 
 三层产物都进 `ContextBudgetAllocator`，per-result 封顶 = 单结果吃不爆总量。**字符预算从 `TokenEstimator` 采样反推 CJK/Latin 密度**（踩过的坑：最初按 Latin ×4 算，中文 1.5 字符/token 导致 6K–16K 中文结果绕过预算且无 trace，全 ASCII 测试没发现——详见 §4）。
 
+**Q：迁到 1M 上下文模型后，这套绝对阈值不就偏低了？[v6.3]**
+
+正是。v6.2 三档阈值（4096/8192/20480）是为 V3 的 64K 窗口调的绝对值，迁到 V4-Flash 1M 后一个 ~6K token 的普通网页结果就会被头尾截断——治理从"防吃爆"退化成"误杀正常结果"。v6.3 改成**随窗口自缩放**：有效值 = `max(绝对下限, 窗口×分数)`，1M 下 budget≈31K / 摘要≈126K / scratch≈262K，正常结果原样放行。**为什么不直接调大绝对值**：硬编码与窗口脱钩，下次迁移又 stale（就是这次的坑）；小窗/未知窗（≤0）退回绝对下限 = v6.2 行为，既有测试零回归。窗口来源是模块 2 的 `ActiveChatModelContext` 单真相源。
+
 **Q：一次典型对话消耗多少 token？最坏情况呢？**
 
 粗略估算（以 DeepSeek-chat 为基准，1K token ≈ ¥0.001）：
@@ -517,11 +529,12 @@ ReAct Agent 的核心是"思考-行动-观察"循环——模型自主决定调�
 | 外部工具 | `agent/tool/external/*.java` |
 | **LLM 熔断器常量 [v5.0]** | `common/resilience/ResilienceConstants.java`（CB_LLM / LLM_FALLBACK_MESSAGE） |
 | **熔断配置 [v5.0]** | `application.yml`（resilience4j.circuitbreaker.instances.llm：50%/80%/60s/3 探测） |
-| **工具结果治理总入口 A/B/C [v6.2]** | `agent/tool/result/ToolResultGovernor.java`（govern 路由 + recordDisposition） |
+| **工具结果治理总入口 A/B/C [v6.2/v6.3]** | `agent/tool/result/ToolResultGovernor.java`（govern 路由 + recordDisposition + 窗口自缩放） |
 | **单结果预算 + token-aware 截断 [v6.2]** | `agent/tool/result/ToolResultBudgeter.java`（initialCharBudget 采样反推 + while 收敛） |
 | **结果摘要 [v6.2]** | `agent/tool/result/ToolResultSummarizer.java`（memoryChatModel，失败回落 A） |
 | **巨量结果分片 scratch [v6.2]** | `agent/tool/result/LargeResultScratchStore.java`、`agent/tool/builtin/SearchLargeResultToolProvider.java` |
-| **工具治理配置 [v6.2]** | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.*`） |
+| **工具治理配置 [v6.2/v6.3]** | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.*` + `window-relative.*` 自缩放） |
+| **治理窗口来源（自缩放）[v6.3]** | `llm/config/ActiveChatModelContext.java`（effectiveContextWindow，与模块 2 共用） |
 | **token 估算 [v5.4]** | `common/util/TokenEstimator.java`（CJK 1.5 / Latin 4 字符每 token） |
 | **逐节点 trace + disposition [v6.1/v6.2]** | `common/trace/TraceCollector.java`、`common/trace/TurnTrace.java` |
 | **通用文本工具（非治理主链路）** | `common/util/TextTruncator.java`（遗留，仍可用） |

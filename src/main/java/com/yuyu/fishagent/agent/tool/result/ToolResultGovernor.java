@@ -3,6 +3,7 @@ package com.yuyu.fishagent.agent.tool.result;
 import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.trace.TraceCollector;
 import com.yuyu.fishagent.common.util.TokenEstimator;
+import com.yuyu.fishagent.llm.config.ActiveChatModelContext;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 
@@ -23,16 +24,21 @@ public class ToolResultGovernor {
     private final ToolResultSummarizer summarizer;
     private final LargeResultScratchStore scratchStore;
     private final TraceCollector traceCollector;
+    private final ActiveChatModelContext activeChatModelContext;
 
     public GovernedResult govern(String turnId, String toolName, String toolInput, String result) {
         if (result == null) {
             return new GovernedResult(null, "unchanged", 0);
         }
         int originalTokens = TokenEstimator.estimate(result);
-        int budget = properties.budgetTokensFor(toolName);
+        // 三档阈值随当前模型上下文窗口自缩放（方案 B）；窗口未知(测试/未注入)时退回绝对下限。
+        int window = activeChatModelContext == null ? 0 : activeChatModelContext.effectiveContextWindow();
+        int budget = properties.effectiveBudgetTokens(toolName, window);
+        int scratchThreshold = properties.effectiveScratchThreshold(window);
+        int summarizeThreshold = properties.effectiveSummarizeThreshold(window);
 
         if (properties.isScratchEnabled()
-                && originalTokens >= Math.max(budget + 1, properties.getScratchLargeThresholdTokens())
+                && originalTokens >= Math.max(budget + 1, scratchThreshold)
                 && turnId != null && !turnId.isBlank()
                 && !"search_large_result".equals(toolName)) {
             LargeResultScratchStore.StoreResult stored = scratchStore.store(turnId, toolName, result);
@@ -45,7 +51,7 @@ public class ToolResultGovernor {
         }
 
         if (properties.isSummarizeEnabled()
-                && originalTokens >= Math.max(budget + 1, properties.getSummarizeThresholdTokens())) {
+                && originalTokens >= Math.max(budget + 1, summarizeThreshold)) {
             String summary = summarizer.summarize(toolName, toolInput, result, budget);
             if (summary != null && !summary.isBlank()) {
                 ToolResultBudgeter.BudgetedResult fitted = budgeter.fit(summary, budget, "summarized");

@@ -12,7 +12,7 @@
 基于 **Spring AI Alibaba `ReactAgent`** 的 graph 状态机智能体引擎——思考-行动-观察循环驱动 LLM 自主调工具，三重机制防死循环，工具结果 token 治理保证单个结果吃不爆上下文。
 
 - **ReAct + 三重防死循环**：graph 节点状态机驱动推理，`recursionLimit` 图节点硬上限 + `ModelCallLimitHook` 优雅终止 + `AgentStatus` 原子状态机，从优雅到强制分层兜底，最坏情况也不浪费多余 token。
-- **工具结果治理 A/B/C**：单工具结果 token 预算封顶——A 头尾截断（兜底）/ B LLM 摘要（中档）/ C 巨量结果分片入 Redis scratch + `search_large_result` 按需回取（招牌）；字符预算从自家 `TokenEstimator` 采样反推 CJK/Latin 密度，**中文结果不再绕过预算**。
+- **工具结果治理 A/B/C**：单工具结果 token 预算封顶——A 头尾截断（兜底）/ B LLM 摘要（中档）/ C 巨量结果分片入 Redis scratch + `search_large_result` 按需回取（招牌）；字符预算从自家 `TokenEstimator` 采样反推 CJK/Latin 密度，**中文结果不再绕过预算**。**[v6.3] 三档阈值随当前模型窗口自缩放（`max(下限, 窗口×分数)`）**，V4-Flash 1M 下 budget≈31K，正常网页/搜索结果原样放行不误杀。
 - **SPI 工具零侵入扩展**：`AgentToolProvider` 接口 + `ToolRegistry` 启动期自动发现，单工具构造失败隔离不影响其它；新增工具只需 `@Component` 实现两方法。
 - **LLM 熔断**：`CircuitBreakerOperator` 保护整条 Flux，故障率 50% / 慢调用 80% 触发 OPEN 快速失败返回降级，**用快速失败替代重试**，避免重复 token 与连接异常。
 - **turn-bound 可观测**：有 turnId 时每轮重建工具集，把 scratch key 与 trace 绑到同一轮；逐节点 thought/action/observation + 耗时落 ES trace，工具治理的处置方式（截断/摘要/检索式注入）可追溯。
@@ -124,13 +124,17 @@ flowchart TD
 ```java
 public GovernedResult govern(String turnId, String toolName, String toolInput, String result) {
     int originalTokens = TokenEstimator.estimate(result);
-    int budget = properties.budgetTokensFor(toolName);          // 默认 4096，可按工具 override
+    // [v6.3] 三档阈值随当前模型窗口自缩放：max(绝对下限, 窗口×分数)；窗口未知→0→退回绝对下限
+    int window = activeChatModelContext == null ? 0 : activeChatModelContext.effectiveContextWindow();
+    int budget = properties.effectiveBudgetTokens(toolName, window);        // 1M 下 ~31K
+    int scratchThreshold = properties.effectiveScratchThreshold(window);    // 1M 下 ~262K
+    int summarizeThreshold = properties.effectiveSummarizeThreshold(window);// 1M 下 ~126K
 
     // C 检索式注入：真正巨量 → 分片入 scratch，注入 top-k 预览
-    if (scratchEnabled && originalTokens >= Math.max(budget+1, 20480)
+    if (scratchEnabled && originalTokens >= Math.max(budget+1, scratchThreshold)
             && turnId != null && !"search_large_result".equals(toolName)) { ... }
     // B 摘要：中等大 → memoryChatModel 忠实摘要（保留错误/数字/路径/URL/时间/结论），失败回落 A
-    if (summarizeEnabled && originalTokens >= Math.max(budget+1, 8192)) { ... }
+    if (summarizeEnabled && originalTokens >= Math.max(budget+1, summarizeThreshold)) { ... }
     // A 头尾截断兜底
     return budgeter.fit(result, budget, "truncated");
 }
@@ -167,6 +171,10 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
 | `scratch-search-max-calls`       | 5     | `search_large_result` 单轮调用上限 |
 | `scratch-inject-top-k`           | 3     | 注入预览片段数                      |
 | `scratch-ttl`                    | 30m   | scratch TTL 兜底               |
+| `window-relative.enabled` [v6.3] | true  | 开启按窗口比例缩放；关则全用绝对下限（= v6.2） |
+| `window-relative.budget-fraction` [v6.3] | 0.03 | budget = max(下限, 窗口×分数)，1M 下 ~31K |
+| `window-relative.summarize-fraction` [v6.3] | 0.12 | 摘要阈值，1M 下 ~126K |
+| `window-relative.scratch-fraction` [v6.3] | 0.25 | scratch 阈值，1M 下 ~262K |
 
 
 ### 踩过的坑：中文预算 BLOCKER（首轮审查揪出）
@@ -190,6 +198,9 @@ public GovernedResult govern(String turnId, String toolName, String toolInput, S
 
 **4. 字符预算怎么定的？（坑）**
 最初按 Latin ×4 算，但 TokenEstimator 对中文是 1.5 字符/token，导致 6K–16K 中文结果绕过预算且无 trace；改成从自家 TokenEstimator 采样反推 CJK/Latin 密度 + while 收敛。教训：全 ASCII 测试覆盖不了中文。
+
+**（v6.3）阈值为什么不写死、要随窗口缩放？**
+v6.2 的 4096/8192/20480 是给 V3 的 64K 窗口调的绝对值；迁到 V4-Flash 1M 后，一个 ~6K token 的普通网页结果就会被头尾截断——治理退化成"误杀正常结果"。改成 `max(下限, 窗口×分数)`，1M 下 budget≈31K 让正常结果原样放行。不直接调大绝对值是因为硬编码与窗口脱钩、下次迁移又 stale（就是这次的坑）；小窗/未知窗退回下限 = v6.2 行为零回归。窗口来自模块 2 的 `ActiveChatModelContext` 单真相源。
 
 **5. 每轮重建 ReactAgent 不贵吗？**
 有构建成本，但换的是 turn 隔离——scratch key、调用上限、trace 绑到同一轮，避免跨轮污染。诚实取舍：等框架支持运行时工具上下文透传后，可以复用 graph 省掉重建。
@@ -287,7 +298,8 @@ LLM 流式响应重试会导致重复 token 或连接异常；熔断器用"快�
 | **单结果预算 + token-aware 截断**                     | `agent/tool/result/ToolResultBudgeter.java`                                                              |
 | **结果摘要**                                       | `agent/tool/result/ToolResultSummarizer.java`                                                            |
 | **巨量结果分片 scratch + 检索**                        | `agent/tool/result/LargeResultScratchStore.java`、`agent/tool/builtin/SearchLargeResultToolProvider.java` |
-| 工具治理配置                                         | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.`*）                                      |
+| 工具治理配置 [v6.2/v6.3]                              | `agent/tool/result/ToolResultProperties.java`（`fish.tool.result.`* + `window-relative.`*）                |
+| 治理窗口来源（自缩放）[v6.3]                           | `llm/config/ActiveChatModelContext.java`（与模块 2 共用）                                                    |
 | LLM 熔断器常量 / 降级文案                               | `common/resilience/ResilienceConstants.java`                                                             |
 | token 估算（CJK 1.5 / Latin 4 字符每 token）          | `common/util/TokenEstimator.java`                                                                        |
 | 逐节点 trace 记录 + disposition                     | `common/trace/TraceCollector.java`、`common/trace/TurnTrace.java`                                         |

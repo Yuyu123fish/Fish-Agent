@@ -11,6 +11,7 @@ import org.springframework.web.client.RestClient;
 
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -21,7 +22,9 @@ import java.util.Map;
 @Slf4j
 public class DashScopeRagReranker implements RagReranker {
 
-    private static final String RERANK_PATH = "/api/v1/services/rerank/text-rerank/text-rerank";
+    // qwen3-rerank 使用 OpenAI 兼容端点（扁平 body + 顶层 results）；
+    // 旧端点 /api/v1/services/rerank/text-rerank/text-rerank 仅服务于 gte-rerank-v2 / qwen3-vl-rerank。
+    private static final String RERANK_PATH = "/compatible-api/v1/reranks";
 
     private final RagProperties ragProperties;
     private final RestClient restClient;
@@ -97,30 +100,23 @@ public class DashScopeRagReranker implements RagReranker {
                                                      List<RagRecall.RecallHit> candidates,
                                                      int limit,
                                                      List<RagRecall.RecallHit> fallback) {
-        List<String> documents = candidates.stream()
-                .map(RagRecall.RecallHit::content)
-                .toList();
+        List<String> documents = documentsForRerank(candidates, MAX_RERANK_DOCUMENTS);
+        Map<String, Object> body = buildRerankBody(
+                ragProperties.getRerank().getModel(), query, documents, limit);
         java.util.function.Supplier<Map<String, Object>> action = () -> restClient.post()
                 .uri(RERANK_PATH)
-                .body(Map.of(
-                        "model", ragProperties.getRerank().getModel(),
-                        "input", Map.of(
-                                "query", query,
-                                "documents", documents),
-                        "parameters", Map.of(
-                                "top_n", limit,
-                                "return_documents", false)))
+                .body(body)
                 .retrieve()
                 .body(Map.class);
 
         if (circuitBreakerHelper == null) {
             return action.get();
         }
-        // 熔断打开时返回一个空响应，后续 extractResults 为空会自然降级为 fallback。
+        // 熔断打开时返回一个空响应（qwen3-rerank 顶层 results），extractResults 为空会自然降级为 fallback。
         return circuitBreakerHelper.executeWithCircuitBreaker(
                 ResilienceConstants.CB_RERANK,
                 action,
-                Map.of("output", Map.of("results", List.of())));
+                Map.of("results", List.of()));
     }
 
     private static RestClient buildClient(RagProperties.Rerank cfg) {
@@ -137,19 +133,49 @@ public class DashScopeRagReranker implements RagReranker {
     }
 
     @SuppressWarnings("unchecked")
-    private static List<Map<String, Object>> extractResults(Map<String, Object> response) {
+    static List<Map<String, Object>> extractResults(Map<String, Object> response) {
         if (response == null) {
             return List.of();
         }
-        Object output = response.get("output");
-        if (!(output instanceof Map<?, ?> outputMap)) {
-            return List.of();
+        // qwen3-rerank：results 在响应顶层；gte-rerank-v2：results 在 output.results 下。
+        Object results = response.get("results");
+        if (!(results instanceof List<?> list)) {
+            Object output = response.get("output");
+            if (output instanceof Map<?, ?> outputMap) {
+                results = ((Map<String, Object>) outputMap).get("results");
+            }
         }
-        Object results = ((Map<String, Object>) outputMap).get("results");
         if (results instanceof List<?> list) {
             return (List<Map<String, Object>>) list;
         }
         return List.of();
+    }
+
+    /** qwen3-rerank 单次请求最大文档数（DashScope 官方上限 500）。 */
+    static final int MAX_RERANK_DOCUMENTS = 500;
+
+    /**
+     * 截取参与精排的候选内容。candidates 已按融合分降序，保留前 {@code maxDocuments} 条，
+     * 避免超过 DashScope 文档数上限导致请求被拒/降级。
+     */
+    static List<String> documentsForRerank(List<RagRecall.RecallHit> candidates, int maxDocuments) {
+        int limit = Math.max(1, maxDocuments);
+        return candidates.stream()
+                .limit(limit)
+                .map(RagRecall.RecallHit::content)
+                .toList();
+    }
+
+    /**
+     * 构造 qwen3-rerank 扁平请求体（query/documents/top_n 与 model 同层，无 input/parameters 包裹）。
+     */
+    static Map<String, Object> buildRerankBody(String model, String query, List<String> documents, int topN) {
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("model", model);
+        body.put("query", query);
+        body.put("documents", documents);
+        body.put("top_n", Math.max(1, topN));
+        return body;
     }
 
     /**

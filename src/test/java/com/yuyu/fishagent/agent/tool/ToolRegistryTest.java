@@ -52,7 +52,8 @@ class ToolRegistryTest {
                 new ToolResultBudgeter(),
                 mock(ToolResultSummarizer.class),
                 newScratchStore(resultProperties),
-                traceCollector);
+                traceCollector,
+                null);
         AgentToolProvider provider = new AgentToolProvider() {
             @Override
             public String name() {

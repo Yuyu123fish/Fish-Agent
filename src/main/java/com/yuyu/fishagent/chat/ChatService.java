@@ -20,6 +20,7 @@ import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.metrics.ChatTurnLifecycle;
 import com.yuyu.fishagent.chat.history.ChatMemoryStore;
 import com.yuyu.fishagent.common.util.TokenEstimator;
+import com.yuyu.fishagent.llm.config.ActiveChatModelContext;
 import com.yuyu.fishagent.llm.config.FishLlmProperties;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemorySnapshot;
 import com.yuyu.fishagent.memory.shortterm.ShortTermMemoryService;
@@ -48,7 +49,6 @@ import org.springframework.ai.chat.messages.AssistantMessage;
 import org.springframework.ai.chat.messages.Message;
 import org.springframework.ai.chat.messages.SystemMessage;
 import org.springframework.ai.chat.messages.UserMessage;
-import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 import reactor.core.Disposable;
@@ -121,7 +121,7 @@ public class ChatService {
     /** 对话模型上下文窗口和预算相关配置。 */
     private final FishLlmProperties fishLlmProperties;
     /** 用于解析当前 provider 对应的模型名，匹配模型窗口覆盖配置。 */
-    private final Environment environment;
+    private final ActiveChatModelContext activeChatModelContext;
     /** 单轮 Agent trace 收集器，只保存进行中的 turn。 */
     private final TraceCollector traceCollector;
     /** 单轮 Agent trace 异步 ES 写入器。 */
@@ -361,8 +361,8 @@ public class ChatService {
                 userId, sid, () -> memoryStore.load(sid));
         ShortTermMemorySnapshot snapshot = memoryResult.snapshot();
 
-        String activeModelName = resolveActiveChatModelName();
-        int contextWindowTokens = fishLlmProperties.getEffectiveContextWindowTokens(activeModelName);
+        String activeModelName = activeChatModelContext.activeModelName();
+        int contextWindowTokens = activeChatModelContext.effectiveContextWindow();
         BudgetPlan budgetPlan = new ContextBudgetAllocator(
                 contextWindowTokens,
                 fishLlmProperties.getOutputReserveTokens(),
@@ -559,17 +559,6 @@ public class ChatService {
         return messages.stream()
                 .mapToInt(message -> TokenEstimator.estimate(message.getText()))
                 .sum();
-    }
-
-    /**
-     * 根据当前 provider 读取实际模型名，用于匹配 fish.llm.model-context-overrides。
-     */
-    private String resolveActiveChatModelName() {
-        return switch (fishLlmProperties.getChatProvider()) {
-            case DEEPSEEK -> environment.getProperty("spring.ai.openai.chat.options.model");
-            case OLLAMA -> environment.getProperty("spring.ai.ollama.chat.options.model");
-            case DASHSCOPE -> environment.getProperty("spring.ai.dashscope.chat.options.model");
-        };
     }
 
     /**

@@ -52,7 +52,9 @@ public class UserKnowledgeElasticsearchSearcher implements RagRecall.DocumentSea
                                 .should(s -> s.match(mt -> mt.field("contextualized_content").query(subQueryText)))
                                 .should(s -> s.match(mt -> mt.field("content").query(subQueryText)))
                                 .minimumShouldMatch("1")))
-                        .filter(f -> f.term(t -> t.field("user_id").value(uid)))))
+                        .filter(f -> f.term(t -> t.field("user_id").value(uid)))
+                        // 半批可见性：排除入库中(ready=false)的切片；存量切片无该字段，must_not 不命中故仍可见
+                        .mustNot(m -> m.term(t -> t.field("ready").value(false)))))
                 .build();
         return mapHits(operations.search(query, UserMemoryDocument.class, index), RagRecall.RecallSource.TEXT);
     }
@@ -89,7 +91,9 @@ public class UserKnowledgeElasticsearchSearcher implements RagRecall.DocumentSea
                         .queryVector(queryVector)
                         .k(k)
                         .numCandidates(numCandidates)
-                        .filter(f -> f.term(t -> t.field("user_id").value(uid))))
+                        .filter(f -> f.bool(nb -> nb
+                                .must(mm -> mm.term(t -> t.field("user_id").value(uid)))
+                                .mustNot(mm -> mm.term(t -> t.field("ready").value(false))))))
                 .build();
         return mapHits(operations.search(q, UserMemoryDocument.class, index), RagRecall.RecallSource.VECTOR);
     }

@@ -92,6 +92,8 @@ PUT fish-rag-trace
       "injected_total_chars": { "type": "integer" },
       "recall_latency_ms":    { "type": "long" },
       "rerank_latency_ms":    { "type": "long" },
+      "provenance_latency_ms": { "type": "long" },
+      "expand_latency_ms":    { "type": "long" },
       "total_latency_ms":     { "type": "long" },
       "created_at":           { "type": "date", "format": "epoch_millis" }
     }
