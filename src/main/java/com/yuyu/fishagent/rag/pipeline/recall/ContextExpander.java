@@ -128,7 +128,7 @@ public class ContextExpander {
                 .map(SearchHit::getContent)
                 .filter(doc -> doc != null && doc.getContent() != null && !doc.getContent().isBlank())
                 .map(doc -> new RagRecall.RecallHit(doc.getId(), doc.getContent().trim(), hit.score(), hit.source(),
-                        hit.effectiveSourceLabel(), hit.authority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex()))
+                        hit.effectiveSourceLabel(), hit.authority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex(), doc.getDocName()))
                 .toList();
     }
 
@@ -145,7 +145,7 @@ public class ContextExpander {
                 .map(SearchHit::getContent)
                 .filter(doc -> doc != null && doc.getContent() != null && !doc.getContent().isBlank())
                 .map(doc -> new RagRecall.RecallHit(doc.getId(), doc.getContent().trim(), hit.score(), hit.source(),
-                        hit.effectiveSourceLabel(), hit.authority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex()))
+                        hit.effectiveSourceLabel(), hit.authority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex(), doc.getDocName()))
                 .toList();
     }
 }

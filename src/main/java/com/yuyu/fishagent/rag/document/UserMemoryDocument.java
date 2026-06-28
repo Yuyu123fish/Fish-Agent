@@ -36,6 +36,10 @@ public class UserMemoryDocument {
     @Field(name = "doc_id", type = FieldType.Keyword)
     private String docId;
 
+    /** 知识库切片的文档名（fish-user-knowledge 索引有此字段）；记忆索引无此字段时为 null。 */
+    @Field(name = "doc_name", type = FieldType.Keyword)
+    private String docName;
+
     @Field(name = "source_type", type = FieldType.Keyword)
     private String sourceType;
 

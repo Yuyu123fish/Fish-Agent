@@ -101,7 +101,7 @@ public class PublicKnowledgeElasticsearchSearcher implements RagRecall.DocumentS
             String id = h.getId() != null ? h.getId() : doc.getId();
             out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source,
                     SourceAuthority.labelForKnowledge(doc.getAuthority(), true),
-                    doc.getAuthority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex()));
+                    doc.getAuthority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex(), doc.getDocName()));
         }
         return out;
     }

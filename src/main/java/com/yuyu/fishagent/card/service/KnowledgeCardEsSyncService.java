@@ -13,7 +13,9 @@ import org.springframework.data.elasticsearch.core.SearchHits;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 知识卡片 ES 同步与向量检索服务。
@@ -31,7 +33,9 @@ public class KnowledgeCardEsSyncService {
     private final ObjectProvider<EmbeddingModel> embeddingModelProvider;
 
     /**
-     * confirmed 卡片写入 ES；embedding 失败时仍写入文本字段，保证全文能力不被外部模型波动影响。
+     * confirmed 卡片写入 ES；embedding 失败时不写 embedding 字段（返回 null，Spring Data 会省略该字段），
+     * 文档仍以文本字段正常写入——全文检索不受影响，向量召回自动跳过该文档。
+     * <p>避免向 dense_vector 字段写入空数组导致整篇文档被 ES 拒收（静默丢失全文能力）。</p>
      */
     public void syncConfirmedQuietly(KnowledgeCard card) {
         if (card == null || card.getId() == null) {
@@ -78,7 +82,7 @@ public class KnowledgeCardEsSyncService {
             return List.of();
         }
         List<Float> vector = embedForCardQuietly(card);
-        if (vector.isEmpty()) {
+        if (vector == null || vector.isEmpty()) {
             return List.of();
         }
         int k = Math.max(1, topK);
@@ -110,17 +114,56 @@ public class KnowledgeCardEsSyncService {
         }
     }
 
+    /** 对账用：列出 ES 中 status=confirmed 的卡片 ID。 */
+    public Set<Long> listConfirmedCardIds(int size) {
+        return queryConfirmedCardIds(size, false);
+    }
+
+    /** 对账用：列出 ES 中 status=confirmed 但缺 embedding 字段的卡片 ID。 */
+    public Set<Long> listConfirmedMissingEmbeddingCardIds(int size) {
+        return queryConfirmedCardIds(size, true);
+    }
+
+    private Set<Long> queryConfirmedCardIds(int size, boolean missingEmbedding) {
+        ElasticsearchOperations ops = elasticsearchOperationsProvider.getIfAvailable();
+        if (ops == null) {
+            return Set.of();
+        }
+        try {
+            NativeQuery query = NativeQuery.builder()
+                    .withMaxResults(Math.max(1, size))
+                    .withQuery(q -> missingEmbedding
+                            ? q.bool(b -> b
+                                    .must(m -> m.term(t -> t.field("status").value(KnowledgeCard.STATUS_CONFIRMED)))
+                                    .mustNot(m -> m.exists(e -> e.field("embedding"))))
+                            : q.term(t -> t.field("status").value(KnowledgeCard.STATUS_CONFIRMED)))
+                    .build();
+            SearchHits<KnowledgeCardDocument> hits = ops.search(query, KnowledgeCardDocument.class);
+            Set<Long> out = new LinkedHashSet<>();
+            for (SearchHit<KnowledgeCardDocument> hit : hits.getSearchHits()) {
+                KnowledgeCardDocument doc = hit.getContent();
+                if (doc != null && doc.getCardId() != null) {
+                    out.add(doc.getCardId());
+                }
+            }
+            return out;
+        } catch (Exception e) {
+            log.warn("[KnowledgeCardES] 对账查询失败 missingEmbedding={}: {}", missingEmbedding, e.getMessage());
+            return Set.of();
+        }
+    }
+
     private List<Float> embedForCardQuietly(KnowledgeCard card) {
         EmbeddingModel embeddingModel = embeddingModelProvider.getIfAvailable();
         if (embeddingModel == null) {
             log.debug("[KnowledgeCardES] EmbeddingModel 不可用，跳过 embedding cardId={}", card.getId());
-            return List.of();
+            return null;
         }
         try {
             return toFloatList(embeddingModel.embed(cardEmbeddingText(card)));
         } catch (Exception e) {
             log.warn("[KnowledgeCardES] embedding 生成失败 cardId={}: {}", card.getId(), e.getMessage());
-            return List.of();
+            return null;
         }
     }
 

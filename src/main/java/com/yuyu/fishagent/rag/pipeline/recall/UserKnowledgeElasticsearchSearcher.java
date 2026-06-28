@@ -113,7 +113,7 @@ public class UserKnowledgeElasticsearchSearcher implements RagRecall.DocumentSea
             String id = h.getId() != null ? h.getId() : doc.getId();
             out.add(new RagRecall.RecallHit(id, doc.getContent().trim(), h.getScore(), source,
                     SourceAuthority.labelForKnowledge(doc.getAuthority(), false),
-                    doc.getAuthority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex()));
+                    doc.getAuthority(), doc.bestCreatedAt(), doc.getDocId(), doc.getChunkIndex(), doc.getDocName()));
         }
         return out;
     }

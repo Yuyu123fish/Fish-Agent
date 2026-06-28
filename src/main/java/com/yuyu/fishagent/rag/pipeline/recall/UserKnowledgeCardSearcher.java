@@ -111,7 +111,7 @@ public class UserKnowledgeCardSearcher implements RagRecall.DocumentSearcher {
                     ? hit.getId()
                     : "card:" + doc.getCardId();
             out.add(new RagRecall.RecallHit(id, toFactText(doc), hit.getScore(), source,
-                    "用户", 0.7, null, null, null));
+                    "用户", 0.7, null, null, null, doc.getTitle()));
         }
         return out;
     }

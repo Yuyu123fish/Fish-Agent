@@ -4,7 +4,7 @@ import { marked } from 'marked'
 import hljs from 'highlight.js'
 import { ElMessage } from 'element-plus'
 import { Tools, DocumentCopy, Check, ArrowDown, ArrowUp } from '@element-plus/icons-vue'
-import type { ChatMessage } from '@/types/chat'
+import type { ChatMessage, SourceRef } from '@/types/chat'
 import { formatRelativeTime } from '@/utils/time'
 
 const props = defineProps<{
@@ -67,6 +67,30 @@ const friendlyToolName = computed(() => {
 const showCursor = computed(
   () => isAssistant.value && props.isLast === true && props.streaming === true
 )
+
+/** 答案出处引用 [v6.4]，仅 assistant 气泡渲染。 */
+const sources = computed(() => props.msg.sources ?? [])
+
+/** 分组顺序与中文标题；每组最多展示 MAX_PER_GROUP 条，超出显示 +N。 */
+const SOURCE_GROUPS: Array<{ kind: SourceRef['kind']; title: string }> = [
+  { kind: 'DOC', title: '笔记' },
+  { kind: 'CARD', title: '卡片' },
+  { kind: 'PUBLIC', title: '公开' },
+  { kind: 'MEMORY', title: '记忆' }
+]
+const MAX_PER_GROUP = 2
+const groupedSources = computed(() => {
+  const list = props.msg.sources ?? []
+  return SOURCE_GROUPS.map((g) => {
+    const items = list.filter((s) => (s.kind ?? 'DOC') === g.kind)
+    return {
+      kind: g.kind,
+      title: g.title,
+      items: items.slice(0, MAX_PER_GROUP),
+      overflow: Math.max(0, items.length - MAX_PER_GROUP)
+    }
+  }).filter((g) => g.items.length > 0)
+})
 
 const copied = ref(false)
 async function copy() {
@@ -141,6 +165,25 @@ function handleMarkdownClick(e: MouseEvent) {
           <span class="dot" />
           <span class="dot" />
           <span class="dot" />
+        </div>
+
+        <!-- 答案出处 [v6.4]：按 kind 分组（笔记/卡片/公开/记忆），chip 只显示名称，
+             snippet 收进 hover tooltip；记忆组最弱化。出处是辅助，不喧宾夺主。 -->
+        <div v-if="sources.length" class="sources">
+          <div v-for="g in groupedSources" :key="g.kind" class="source-group">
+            <span class="group-title">
+              {{ g.title }}<span v-if="g.overflow > 0" class="group-overflow"> +{{ g.overflow }}</span>
+            </span>
+            <div class="source-chips">
+              <span
+                v-for="(s, i) in g.items"
+                :key="i"
+                class="source-chip"
+                :class="{ memory: s.memory }"
+                :title="s.snippet || s.label"
+              >{{ s.label }}<span v-if="s.timeText" class="chip-time"> · {{ s.timeText }}</span></span>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -422,6 +465,59 @@ function handleMarkdownClick(e: MouseEvent) {
 
 .bubble.user .msg-time {
   text-align: left;
+}
+
+/* 答案出处 [v6.4] */
+.sources {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.source-group {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.group-title {
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.3px;
+}
+.group-overflow {
+  opacity: 0.7;
+}
+.source-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.source-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 2px;
+  max-width: 220px;
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg-sunken);
+  font-size: 11px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: default;
+}
+.source-chip.memory {
+  border-style: dashed;
+  opacity: 0.7;
+}
+.chip-time {
+  color: var(--text-muted);
+  font-size: 10px;
+  flex-shrink: 0;
 }
 
 .collapse-enter-active,

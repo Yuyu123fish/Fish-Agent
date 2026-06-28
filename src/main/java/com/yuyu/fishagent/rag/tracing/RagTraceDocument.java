@@ -79,4 +79,21 @@ public class RagTraceDocument {
 
     @Field(name = "created_at")
     private long createdAt;
+
+    /** 本轮真正注入上下文的事实明细（id / 来源标签 / 分数），用于 per-fact 可观测与离线评估。 */
+    @Field(name = "injected_facts", type = FieldType.Object)
+    private List<InjectedFact> injectedFacts;
+
+    /** 单条注入事实的溯源记录。 */
+    @Data
+    public static class InjectedFact {
+        @Field(name = "id", type = FieldType.Keyword)
+        private String id;
+
+        @Field(name = "source_label", type = FieldType.Keyword)
+        private String sourceLabel;
+
+        @Field(name = "score", type = FieldType.Double)
+        private Double score;
+    }
 }

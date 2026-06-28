@@ -15,6 +15,27 @@ export interface ChatMessage {
    * 前端在 SSE `event: tool` 收到时本地构造，仅用于展示。
    */
   toolName?: string
+  /**
+   * 答案出处引用 [v6.4]：后端持久化结构里没有此字段；
+   * 前端在 SSE `event: sources` 收到时本地构造，仅用于展示。
+   */
+  sources?: SourceRef[]
+}
+
+/**
+ * 答案出处引用 [v6.4]，与后端 {@code com.yuyu.fishagent.chat.dto.SourceRef} 对齐。
+ * - memory=true：对话记忆源，timeText 为相对年龄（如"3天前"），无 docId。
+ * - memory=false：文档/卡片源，docId+chunkIndex 可跳回原文，timeText 为 yyyy-MM。
+ */
+export interface SourceRef {
+  label: string
+  /** 来源分类 [v6.4]，前端按此分组 */
+  kind?: 'MEMORY' | 'DOC' | 'CARD' | 'PUBLIC'
+  docId?: string | null
+  chunkIndex?: number | null
+  snippet: string
+  memory: boolean
+  timeText: string
 }
 
 /** 与后端 SessionInfo 对应（注意字段叫 updatedAt 不是 lastUpdatedAt）。 */

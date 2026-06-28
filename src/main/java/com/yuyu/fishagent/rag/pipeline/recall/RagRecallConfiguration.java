@@ -7,6 +7,8 @@ import com.yuyu.fishagent.common.metrics.ChatMetrics;
 import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
 import com.yuyu.fishagent.rag.config.KnowledgeProperties;
 import com.yuyu.fishagent.rag.config.RagProperties;
+import com.yuyu.fishagent.card.mapper.CardRelationMapper;
+import com.yuyu.fishagent.card.mapper.KnowledgeCardMapper;
 import com.yuyu.fishagent.rag.pipeline.rerank.DashScopeRagReranker;
 import com.yuyu.fishagent.rag.pipeline.rerank.RagReranker;
 import com.yuyu.fishagent.rag.tracing.RagQualityLogger;
@@ -60,7 +62,9 @@ public class RagRecallConfiguration {
             RagHydeService ragHydeService,
             RagQualityLogger ragQualityLogger,
             CircuitBreakerHelper circuitBreakerHelper,
-            ChatMetrics chatMetrics) {
+            ChatMetrics chatMetrics,
+            CardRelationMapper cardRelationMapper,
+            KnowledgeCardMapper knowledgeCardMapper) {
         return new RagRecall.DefaultAugmentation(
                 ragProperties,
                 knowledgeProperties,
@@ -76,6 +80,8 @@ public class RagRecallConfiguration {
                 ragHydeService,
                 ragQualityLogger,
                 circuitBreakerHelper,
-                chatMetrics);
+                chatMetrics,
+                cardRelationMapper,
+                knowledgeCardMapper);
     }
 }

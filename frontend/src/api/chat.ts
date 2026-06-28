@@ -13,13 +13,15 @@
  *      event: error → 错误信息
  */
 
-import type { ChatMessage, SessionInfo } from '@/types/chat'
+import type { ChatMessage, SessionInfo, SourceRef } from '@/types/chat'
 import { apiUrl, authFetch } from './http'
 
 export interface SseHandlers {
   onChunk?: (delta: string) => void
   onTool?: (toolName: string, payload?: string) => void
   onSession?: (sessionId: string) => void
+  /** 答案出处引用 [v6.4]：在 done 前下发，data 为 SourceRef[] 的 JSON。 */
+  onSources?: (sources: SourceRef[]) => void
   onDone?: () => void
   onError?: (msg: string) => void
 }
@@ -142,6 +144,15 @@ export async function streamChat(opts: StreamOptions, handlers: SseHandlers): Pr
         case 'session':
           handlers.onSession?.(ev.data)
           break
+        case 'sources': {
+          // [v6.4] 答案出处：data 为 SourceRef[] JSON；解析失败不阻塞流
+          try {
+            handlers.onSources?.(JSON.parse(ev.data) as SourceRef[])
+          } catch {
+            /* ignore */
+          }
+          break
+        }
         case 'done':
           handlers.onDone?.()
           return

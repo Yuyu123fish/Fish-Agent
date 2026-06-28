@@ -2,6 +2,7 @@ package com.yuyu.fishagent.rag.tracing;
 
 import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.rag.config.RagProperties;
+import com.yuyu.fishagent.rag.pipeline.recall.RagRecall;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -12,6 +13,8 @@ import org.springframework.data.elasticsearch.core.document.Document;
 import org.springframework.data.elasticsearch.core.mapping.IndexCoordinates;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ThreadLocalRandom;
 
@@ -48,6 +51,22 @@ public class RagQualityLogger {
         } catch (Exception e) {
             log.warn("[RagQualityLogger] 初始化追踪索引失败: {}", e.getMessage());
         }
+    }
+
+    /** 把本轮注入上下文的命中映射为 per-fact 明细（id / 来源标签 / 分数）。 */
+    public static List<RagTraceDocument.InjectedFact> toInjectedFacts(List<RagRecall.RecallHit> hits) {
+        if (hits == null || hits.isEmpty()) {
+            return List.of();
+        }
+        List<RagTraceDocument.InjectedFact> out = new ArrayList<>(hits.size());
+        for (RagRecall.RecallHit hit : hits) {
+            RagTraceDocument.InjectedFact fact = new RagTraceDocument.InjectedFact();
+            fact.setId(hit.id());
+            fact.setSourceLabel(hit.effectiveSourceLabel());
+            fact.setScore(hit.score());
+            out.add(fact);
+        }
+        return out;
     }
 
     public void log(RagTraceDocument trace) {
@@ -99,7 +118,11 @@ public class RagQualityLogger {
                 Map.entry("recall_latency_ms", Map.of("type", "long")),
                 Map.entry("rerank_latency_ms", Map.of("type", "long")),
                 Map.entry("total_latency_ms", Map.of("type", "long")),
-                Map.entry("created_at", Map.of("type", "date", "format", "epoch_millis"))
+                Map.entry("created_at", Map.of("type", "date", "format", "epoch_millis")),
+                Map.entry("injected_facts", Map.of("type", "object", "properties", Map.of(
+                        "id", Map.of("type", "keyword"),
+                        "source_label", Map.of("type", "keyword"),
+                        "score", Map.of("type", "double"))))
         ));
         return mapping;
     }

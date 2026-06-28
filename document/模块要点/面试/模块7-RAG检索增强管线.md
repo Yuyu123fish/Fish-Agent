@@ -17,6 +17,7 @@
 - **ContextExpander 邻片扩展**（攻 Q7）：按 doc_id+chunk_index±1 取邻片拼回，补全 chunk 上下文。
 - **冲突感知 prompt + 溯源标签**：每条带 `[来源:官方/用户/公开·yyyy-MM]` + 冲突处理指令。
 - **熔断降级**：es-text/es-vector/rerank 三熔断器，持续性故障毫秒级快速失败，降级为单路/候选池前 N。
+- **[v6.5] 知识图谱召回**：`CardGraphExpander` 沿 `card_relation` 取 1 跳邻居（按关系类型加权）以「图谱」来源注入——精心建模的关系类型真正进上下文，不再只是详情页装饰字段；配 per-fact trace（`injected_facts`）让召回可观测、可评估。
 
 ---
 
@@ -120,6 +121,31 @@ RAG 依赖外部服务（ES 文本/向量召回、DashScope 精排），持续�
 
 **2. 为什么熔断而不是重试？**
 持续性故障下重试只会每次等超时、加重负载。熔断快速失败 + 冷却后 HALF-OPEN 放探测自动恢复，比重试更适合外部服务依赖。
+
+---
+
+## 四、v6.5：知识图谱召回 + per-fact trace（STAR，审计驱动）
+
+> 审计发现整套"知识图谱"精心建模了 `card_relation`(precedes/derived_from/contains/related) 却**从不参与召回**——召回只做文本+向量检索，图遍历为零，关系类型是详情页装饰字段。本节让图关系真正进上下文；完整见 [v6.5 文档](../../v6/v6.5-知识图谱链路治理-20260628.md)。
+
+**① CardGraphExpander（图谱邻居注入）**
+- **Situation**：`card_relation` 建表建索引、关联发现持续产出边，但召回从不沿边遍历——精心建模的关系类型在召回侧零消费。
+- **Task**：让图关系真正进模型上下文（用户问"X 的前置概念"，库里若有 `A precedes X`，A 要能被带入）。
+- **Action**：精排后 expand 阶段，对命中卡片沿 `card_relation` 取 1 跳邻居，按关系类型加权（precedes/derived_from/contains=0.9 ＞ related=0.6）、去重、截断上限 4，以来源「图谱」注入；**邻居绕过精排**（相关性来自图关系而非查询匹配，与 ContextExpander 加 chunk 邻块同理）。
+- **Result**：关系类型从装饰字段变成召回侧真正消费的图遍历。
+
+**② per-fact trace（可衡量性地基）**
+- **Situation**：trace 只记聚合计数（`recall_total_hits`/`injected_fact_count`），回答不了"注入了哪些、来自哪、图谱邻居有没有用"。不可衡量 = 不可改进。
+- **Task / Action**：`RagTraceDocument.injected_facts`（id/source_label/score）落每轮注入事实明细，图谱邻居 `source_label=图谱` 可观测。
+- **Result**：召回可回归验证，是 v6.1 eval 在图谱子系统的地基。
+
+### 追问
+
+**1. "知识图谱"和普通向量库的区别（曾被问倒）？**
+之前 `card_relation` 建模了 precedes 却从不参与召回——召回只做文本+向量，图遍历为零，关系是装饰字段。`CardGraphExpander` 让命中卡片沿边取 1 跳邻居注入，关系才真正进上下文。
+
+**2. 图邻居为什么绕过精排？**
+它的相关性来自与种子的图关系（precedes/related），而非与查询文本的匹配；和 `ContextExpander` 加 chunk 邻块同理——按结构邻接补上下文，不参与查询相关性排序。
 
 ---
 

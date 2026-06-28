@@ -2,7 +2,7 @@
 
 ## 一句话定位
 
-**查询分解 → 四索引双路并发召回（es-text/es-vector 熔断保护 [v5.0]）→ RRF 分数融合 → Cross-Encoder 精排（rerank 熔断保护 [v5.0]）→ [v6.0 ProvenanceBooster 权威+新近加权 + ContextExpander 邻片扩展] → Top-K 注入 SystemMessage** 管线，配合 **HyDE 假设性答案增强**、**ES 异步质量追踪**、**Resilience4j 外部服务熔断降级 [v5.0]**、**v6.0 溯源标签 + 冲突感知 prompt**，实现数据驱动的检索闭环。
+**查询分解 → 四索引双路并发召回（es-text/es-vector 熔断保护 [v5.0]）→ RRF 分数融合 → Cross-Encoder 精排（rerank 熔断保护 [v5.0]）→ [v6.0 ProvenanceBooster 权威+新近加权 + ContextExpander 邻片扩展] → Top-K 注入 SystemMessage** 管线，配合 **HyDE 假设性答案增强**、**ES 异步质量追踪**、**Resilience4j 外部服务熔断降级 [v5.0]**、**v6.0 溯源标签 + 冲突感知 prompt**，实现数据驱动的检索闭环；**[v6.5] CardGraphExpander 沿 card_relation 取 1 跳邻居注入召回 + per-fact trace（injected_facts）**。
 
 ---
 
@@ -445,6 +445,31 @@ sort by chunk_index ASC → 拼接 content
 
 ---
 
+### 9. 知识图谱召回 + per-fact trace（v6.5，攻"图谱只是装饰"）
+
+> v6.5 审计发现：`card_relation`(precedes/derived_from/contains/related) 建表建索引、关联发现持续产出边，但召回阶段**从不沿边遍历**——召回只做卡片/切片的文本+向量检索，图遍历能力为零，关系类型是详情页装饰字段。本节让图关系真正进上下文；完整记录见 [v6.5 文档](../v6/v6.5-知识图谱链路治理-20260628.md)。
+
+**① CardGraphExpander（图谱邻居注入）** `[CardGraphExpander.java](../../src/main/java/com/yuyu/fishagent/rag/pipeline/recall/CardGraphExpander.java)`
+
+精排后的 expand 阶段，对召回命中的卡片沿 `card_relation` 取 **1 跳邻居**，按关系类型加权（`precedes`/`derived_from`/`contains` = 0.9 ＞ `related_to` = 0.6），与已命中卡片去重、按「种子分 × 权重」排序、截断上限 4，以来源标注**「图谱」**注入（`source=VECTOR`、`sourceLabel=图谱`、`authority=0.6`）。
+
+```java
+// DefaultAugmentation expand leg（与 ContextExpander 串联）：
+List<RecallHit> finalHits = cardGraphExpander.expand(contextExpander.expand(provenance));
+// 邻居绕过精排——相关性来自与种子的图关系，而非查询文本匹配
+```
+
+- **为什么绕过精排**：邻居的相关性来自与种子的图关系（precedes/related），而非与查询文本的匹配；与 `ContextExpander` 加 chunk 邻块同理——按结构邻接补上下文，不参与查询相关性排序。
+- 核心逻辑在 package-private `expand(hits, userId)`（绕过 `UserContextHolder` 线程本地，便于单测）；`RagRecallConfiguration` 注入 `CardRelationMapper`/`KnowledgeCardMapper`。
+
+**② per-fact trace（可衡量性地基）**
+
+`RagTraceDocument` 加 `injected_facts`（ES object：`id`/`source_label`/`score`）+ 内嵌 `InjectedFact`；`RagQualityLogger.toInjectedFacts(List<RecallHit>)` 把 `finalHits` 映射成明细；`doBuildAugmentation` 注入完成后落 `trace.setInjectedFacts(...)`。
+
+- 聚合指标（`recall_total_hits`/`injected_fact_count`）回答不了"注入了哪些、来自哪、图谱邻居有没有用"；per-fact trace 让召回**可回归验证**（图谱邻居 `source_label=图谱` 可观测），是 v6.1 eval 在图谱子系统的地基。
+
+---
+
 ## 方案详解
 
 ### 我们选了什么
@@ -669,6 +694,7 @@ RRF（Reciprocal Rank Fusion）只看排名不看原始分：
 | 公共知识检索 | `rag/pipeline/recall/PublicKnowledgeElasticsearchSearcher.java` |
 | **权威+新近加权 [v6.0]** | `rag/pipeline/recall/ProvenanceBooster.java`（rerank 后调分） |
 | **邻片扩展 [v6.0]** | `rag/pipeline/recall/ContextExpander.java`（doc_id+chunk_index±span） |
+| **知识图谱邻居扩展 [v6.5]** | `rag/pipeline/recall/CardGraphExpander.java`（沿 card_relation 取 1 跳、按关系类型加权、来源「图谱」注入） |
 | **来源权威度 + 标签 [v6.0]** | `rag/pipeline/recall/SourceAuthority.java`（官方/公开/用户） |
 | **记忆时间标签 [v6.0]** | `rag/pipeline/recall/MemoryAgeLabel.java` |
 | **查询扩展** | `rag/pipeline/expand/RagQueryExpand.java` |
@@ -681,6 +707,6 @@ RRF（Reciprocal Rank Fusion）只看排名不看原始分：
 | 精排接口 | `rag/pipeline/rerank/RagReranker.java` |
 | **熔断事件日志 [v5.0]** | `common/resilience/ResilienceConfig.java` |
 | **质量追踪** | `rag/tracing/RagQualityLogger.java` |
-| 追踪文档 | `rag/tracing/RagTraceDocument.java` |
+| 追踪文档 [v6.5 +injected_facts] | `rag/tracing/RagTraceDocument.java`（per-fact 明细：id/source_label/score） |
 | RAG 配置 | `rag/config/RagProperties.java`（含 Recall / Expand / Hyde / Fusion / Rerank / Tracing 嵌套类） |
 | 对话编排（调用 RAG） | `chat/ChatService.java` |

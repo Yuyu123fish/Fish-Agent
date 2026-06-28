@@ -8,6 +8,8 @@ import com.yuyu.fishagent.rag.pipeline.fusion.RagScoreFusion;
 import com.yuyu.fishagent.rag.pipeline.query.RagQueryRewrite;
 import com.yuyu.fishagent.auth.context.UserContext;
 import com.yuyu.fishagent.auth.context.UserContextHolder;
+import com.yuyu.fishagent.card.mapper.CardRelationMapper;
+import com.yuyu.fishagent.card.mapper.KnowledgeCardMapper;
 import com.yuyu.fishagent.common.resilience.CircuitBreakerHelper;
 import com.yuyu.fishagent.common.resilience.ResilienceConstants;
 import com.yuyu.fishagent.common.trace.MdcAsync;
@@ -61,23 +63,39 @@ public final class RagRecall {
      */
     public record RecallHit(String id, String content, double score, RecallSource source,
                             String sourceLabel, Double authority, Long createdAt,
-                            String docId, Integer chunkIndex) {
+                            String docId, Integer chunkIndex, String docName) {
+
+        /** 旧 9 参构造（无 docName），向后兼容：docName=null。 */
+        public RecallHit(String id, String content, double score, RecallSource source,
+                         String sourceLabel, Double authority, Long createdAt,
+                         String docId, Integer chunkIndex) {
+            this(id, content, score, source, sourceLabel, authority, createdAt, docId, chunkIndex, null);
+        }
 
         public RecallHit(String id, String content, double score, RecallSource source) {
-            this(id, content, score, source, null, null, null, null, null);
+            this(id, content, score, source, null, null, null, null, null, null);
         }
 
         public RecallHit withScore(double newScore) {
-            return new RecallHit(id, content, newScore, source, sourceLabel, authority, createdAt, docId, chunkIndex);
+            return new RecallHit(id, content, newScore, source, sourceLabel, authority, createdAt, docId, chunkIndex, docName);
         }
 
         public RecallHit withContent(String newContent) {
-            return new RecallHit(id, newContent, score, source, sourceLabel, authority, createdAt, docId, chunkIndex);
+            return new RecallHit(id, newContent, score, source, sourceLabel, authority, createdAt, docId, chunkIndex, docName);
         }
 
         public String effectiveSourceLabel() {
             return sourceLabel == null || sourceLabel.isBlank() ? "公开" : sourceLabel.trim();
         }
+    }
+
+    /**
+     * 带出处命中的增强结果 [v6.4 Top1]：{@code block} 注入模型上下文，{@code hits} 下发前端做来源溯源。
+     *
+     * <p>hits 为精排 + provenance + expand 后实际注入的 finalHits；无命中（candidates/finalHits 空）时
+     * 整个 Optional 为 empty，既无 block 也无 hits。</p>
+     */
+    public record AugmentationResult(String block, List<RecallHit> hits) {
     }
 
     /** 供 Chat 层注入：把本轮用户输入转为可插入系统消息的 RAG 文本（若有命中）。 */
@@ -97,6 +115,16 @@ public final class RagRecall {
         default Optional<String> buildAugmentation(String sessionId, String rawUserInput,
                                                    String contextHint, int tokenBudget) {
             return buildAugmentation(sessionId, rawUserInput, contextHint);
+        }
+
+        /**
+         * 带出处命中的增强 [v6.4 Top1]：返回 block + 召回命中，供前端来源溯源。
+         * 默认忽略命中、委托给 4 参数版本（返回空 hits），保持现有实现兼容。
+         */
+        default Optional<AugmentationResult> buildAugmentationWithSources(String sessionId, String rawUserInput,
+                                                                          String contextHint, int tokenBudget) {
+            return buildAugmentation(sessionId, rawUserInput, contextHint, tokenBudget)
+                    .map(block -> new AugmentationResult(block, List.of()));
         }
     }
 
@@ -171,6 +199,7 @@ public final class RagRecall {
         private final ChatMetrics chatMetrics;
         private final ProvenanceBooster provenanceBooster;
         private final ContextExpander contextExpander;
+        private final CardGraphExpander cardGraphExpander;
 
         public DefaultAugmentation(
                 RagProperties ragProperties,
@@ -187,7 +216,9 @@ public final class RagRecall {
                 RagHydeService hydeService,
                 RagQualityLogger qualityLogger,
                 CircuitBreakerHelper circuitBreakerHelper,
-                ChatMetrics chatMetrics) {
+                ChatMetrics chatMetrics,
+                CardRelationMapper cardRelationMapper,
+                KnowledgeCardMapper knowledgeCardMapper) {
             this.ragProperties = ragProperties;
             this.queryRewriter = queryRewriter;
             this.subQueryExpander = subQueryExpander;
@@ -204,27 +235,34 @@ public final class RagRecall {
             this.chatMetrics = chatMetrics;
             this.provenanceBooster = new ProvenanceBooster(ragProperties);
             this.contextExpander = new ContextExpander(ragProperties, knowledgeProperties, operationsProvider);
+            this.cardGraphExpander = new CardGraphExpander(cardRelationMapper, knowledgeCardMapper);
         }
 
         @Override
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput) {
-            return doBuildAugmentation(sessionId, rawUserInput, null, 0);
+            return doBuildAugmentation(sessionId, rawUserInput, null, 0).map(AugmentationResult::block);
         }
 
         @Override
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput, String contextHint) {
-            return doBuildAugmentation(sessionId, rawUserInput, contextHint, 0);
+            return doBuildAugmentation(sessionId, rawUserInput, contextHint, 0).map(AugmentationResult::block);
         }
 
         @Override
         @Observed(name = "rag.recall", contextualName = "RAG recall")
         public Optional<String> buildAugmentation(String sessionId, String rawUserInput,
                                                   String contextHint, int tokenBudget) {
+            return doBuildAugmentation(sessionId, rawUserInput, contextHint, tokenBudget).map(AugmentationResult::block);
+        }
+
+        @Override
+        public Optional<AugmentationResult> buildAugmentationWithSources(String sessionId, String rawUserInput,
+                                                                          String contextHint, int tokenBudget) {
             return doBuildAugmentation(sessionId, rawUserInput, contextHint, tokenBudget);
         }
 
-        private Optional<String> doBuildAugmentation(String sessionId, String rawUserInput,
-                                                     String contextHint, int tokenBudget) {
+        private Optional<AugmentationResult> doBuildAugmentation(String sessionId, String rawUserInput,
+                                                                 String contextHint, int tokenBudget) {
             if (!ragProperties.isEnabled()) {
                 return Optional.empty();
             }
@@ -399,7 +437,7 @@ public final class RagRecall {
 
             long expandStart = System.currentTimeMillis();
             List<RecallHit> finalHits = chatMetrics.ragLegTimer(ChatMetrics.RagLeg.EXPAND).record(() ->
-                    contextExpander.expand(provenance));
+                    cardGraphExpander.expand(contextExpander.expand(provenance)));
             trace.setExpandLatencyMs(System.currentTimeMillis() - expandStart);
             if (finalHits.isEmpty()) {
                 log.debug("[RagRecall] 精排后无命中 sid={}, rerankInput={}, rerankTopN={}",
@@ -413,6 +451,7 @@ public final class RagRecall {
             trace.setRerankTopScore(finalHits.get(0).score());
             trace.setRerankLowestScore(finalHits.get(finalHits.size() - 1).score());
             trace.setInjectedFactCount(finalHits.size());
+            trace.setInjectedFacts(qualityLogger.toInjectedFacts(finalHits));
             trace.setInjectedTotalChars(block.length());
             trace.setTotalLatencyMs(System.currentTimeMillis() - totalStart);
             qualityLogger.log(trace);
@@ -428,7 +467,7 @@ public final class RagRecall {
                 log.debug("[RagRecall]   #{} id={}, score={}, source={}, preview=[{}]",
                         i + 1, hit.id(), String.format("%.4f", hit.score()), hit.source(), preview);
             }
-            return Optional.of(block);
+            return Optional.of(new AugmentationResult(block, finalHits));
         }
 
         private List<RecallHit> safeTextSearch(DocumentSearcher searcher, String sessionId, String sq, int perK) {

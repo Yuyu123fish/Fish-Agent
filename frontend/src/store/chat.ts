@@ -169,6 +169,14 @@ export const useChatStore = defineStore('chat', () => {
             // 注意：不再立刻 push 空 assistant 气泡，
             // 后续 chunk 来时由 ensureAssistantTail 懒生成。
           },
+          // [v6.4] 答案出处：done 前下发，挂到当前 assistant 气泡
+          onSources: (sources) => {
+            const sid = activeSid.value
+            ensureAssistantTail(sid)
+            updateLastAssistant(sid, (m) => {
+              m.sources = sources
+            })
+          },
           onError: (msg) => {
             errorMsg.value = msg
           }

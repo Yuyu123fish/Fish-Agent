@@ -7,12 +7,10 @@ import com.yuyu.fishagent.card.dto.RelationSuggestion;
 import com.yuyu.fishagent.card.entity.CardKeyword;
 import com.yuyu.fishagent.card.entity.CardRelation;
 import com.yuyu.fishagent.card.entity.Keyword;
-import com.yuyu.fishagent.card.entity.KeywordRelation;
 import com.yuyu.fishagent.card.entity.KnowledgeCard;
 import com.yuyu.fishagent.card.mapper.CardKeywordMapper;
 import com.yuyu.fishagent.card.mapper.CardRelationMapper;
 import com.yuyu.fishagent.card.mapper.KeywordMapper;
-import com.yuyu.fishagent.card.mapper.KeywordRelationMapper;
 import com.yuyu.fishagent.card.mapper.KnowledgeCardMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -27,6 +25,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
 /**
  * 多信号卡片关联发现：关键词重叠、分组一致、关键词层次/关系扩展和 embedding 召回共同投票。
@@ -48,7 +47,6 @@ public class CardRelationDiscoveryService {
     private final CardRelationMapper cardRelationMapper;
     private final CardKeywordMapper cardKeywordMapper;
     private final KeywordMapper keywordMapper;
-    private final KeywordRelationMapper keywordRelationMapper;
     private final KnowledgeCardService knowledgeCardService;
     private final KnowledgeCardEsSyncService esSyncService;
 
@@ -69,12 +67,17 @@ public class CardRelationDiscoveryService {
         }
         Map<Long, Set<Long>> keywordIdsByCard = loadKeywordIdsByCard(userId);
         Map<Long, Keyword> keywordById = loadKeywordById(userId);
-        Map<Long, Set<Long>> expandedKeywords = buildExpandedKeywordMap(userId, keywordIdsByCard, keywordById);
+        Map<Long, Set<Long>> expandedKeywords = buildExpandedKeywordMap(keywordIdsByCard);
         Set<String> existingEdges = loadExistingEdges(userId);
         Set<CardPair> candidates = buildCandidates(cards, keywordIdsByCard);
-        Map<String, Float> embeddingScores = candidates.size() <= MAX_EMBEDDING_CANDIDATES
-                ? loadEmbeddingScores(userId, candidates, cardById)
-                : Map.of();
+        Set<CardPair> embeddingScope = selectEmbeddingScope(candidates, keywordIdsByCard, expandedKeywords, cardById);
+        if (embeddingScope.size() < candidates.size()) {
+            log.warn("[CardRelationDiscovery] embedding 信号降级：候选对={}，参与 embedding 评分的候选对={}",
+                    candidates.size(), embeddingScope.size());
+        }
+        Map<String, Float> embeddingScores = embeddingScope.isEmpty()
+                ? Map.of()
+                : loadEmbeddingScores(userId, embeddingScope, cardById);
 
         List<RelationSuggestion> suggestions = new ArrayList<>();
         for (CardPair pair : candidates) {
@@ -154,31 +157,17 @@ public class CardRelationDiscoveryService {
         return out;
     }
 
-    private Map<Long, Set<Long>> buildExpandedKeywordMap(Long userId,
-                                                         Map<Long, Set<Long>> keywordIdsByCard,
-                                                         Map<Long, Keyword> keywordById) {
-        List<KeywordRelation> relations = keywordRelationMapper.selectByUserId(userId);
-        Map<Long, Set<Long>> relationNeighbors = new HashMap<>();
-        for (KeywordRelation relation : relations) {
-            relationNeighbors.computeIfAbsent(relation.getFromKeywordId(), id -> new LinkedHashSet<>()).add(relation.getToKeywordId());
-            relationNeighbors.computeIfAbsent(relation.getToKeywordId(), id -> new LinkedHashSet<>()).add(relation.getFromKeywordId());
-        }
-
+    /**
+     * 关键词层次 / 关系扩展（S3 信号）。
+     *
+     * <p>{@code keyword_relation} 与 {@code keyword.parent_id} 的表结构、实体、mapper 类均已保留，
+     * 但写入路径尚未落地（恒为空）。这里不再读取这些恒空的结构以免误导，S3 信号诚实为 0；
+     * 待后续补上概念分类的写入路径后再恢复真正的扩展逻辑。</p>
+     */
+    private Map<Long, Set<Long>> buildExpandedKeywordMap(Map<Long, Set<Long>> keywordIdsByCard) {
         Map<Long, Set<Long>> out = new HashMap<>();
-        for (Map.Entry<Long, Set<Long>> entry : keywordIdsByCard.entrySet()) {
-            Set<Long> expanded = new LinkedHashSet<>();
-            for (Long keywordId : entry.getValue()) {
-                Keyword keyword = keywordById.get(keywordId);
-                if (keyword != null && keyword.getParentId() != null) {
-                    expanded.add(keyword.getParentId());
-                    Keyword parent = keywordById.get(keyword.getParentId());
-                    if (parent != null && parent.getParentId() != null) {
-                        expanded.add(parent.getParentId());
-                    }
-                }
-                expanded.addAll(relationNeighbors.getOrDefault(keywordId, Set.of()));
-            }
-            out.put(entry.getKey(), expanded);
+        for (Long cardId : keywordIdsByCard.keySet()) {
+            out.put(cardId, new LinkedHashSet<>());
         }
         return out;
     }
@@ -307,7 +296,45 @@ public class CardRelationDiscoveryService {
         return Math.round(value * 1000f) / 1000f;
     }
 
-    private record CardPair(Long a, Long b) {
+    /**
+     * 决定参与 embedding 评分的候选对：候选对总数在上限内则全部参与；
+     * 超过上限时按其余三信号（关键词 Jaccard / 同组 / 关键词层次扩展）降序取 top-MAX_EMBEDDING_CANDIDATES 对，
+     * 保证头部候选仍享有 embedding 信号、长尾不再被整体静默置零。
+     */
+    static Set<CardPair> selectEmbeddingScope(Set<CardPair> candidates,
+                                              Map<Long, Set<Long>> keywordIdsByCard,
+                                              Map<Long, Set<Long>> expandedKeywords,
+                                              Map<Long, KnowledgeCard> cardById) {
+        if (candidates.size() <= MAX_EMBEDDING_CANDIDATES) {
+            return candidates;
+        }
+        return candidates.stream()
+                .sorted(Comparator.comparingDouble(
+                        (CardPair pair) -> partialScore(pair, keywordIdsByCard, expandedKeywords, cardById)).reversed())
+                .limit(MAX_EMBEDDING_CANDIDATES)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /** 计算"非 embedding"三信号加权分，用于 embedding 降级时的候选对排序。 */
+    private static float partialScore(CardPair pair,
+                                      Map<Long, Set<Long>> keywordIdsByCard,
+                                      Map<Long, Set<Long>> expandedKeywords,
+                                      Map<Long, KnowledgeCard> cardById) {
+        KnowledgeCard a = cardById.get(pair.a());
+        KnowledgeCard b = cardById.get(pair.b());
+        if (a == null || b == null) {
+            return -1f;
+        }
+        float keywordScore = jaccard(keywordIdsByCard.getOrDefault(a.getId(), Set.of()),
+                keywordIdsByCard.getOrDefault(b.getId(), Set.of()));
+        float ancestorScore = jaccard(expandedKeywords.getOrDefault(a.getId(), Set.of()),
+                expandedKeywords.getOrDefault(b.getId(), Set.of()));
+        return keywordScore * KEYWORD_WEIGHT
+                + (sameGroup(a, b) ? GROUP_WEIGHT : 0)
+                + ancestorScore * ANCESTOR_WEIGHT;
+    }
+
+    record CardPair(Long a, Long b) {
         static CardPair of(Long x, Long y) {
             return x <= y ? new CardPair(x, y) : new CardPair(y, x);
         }

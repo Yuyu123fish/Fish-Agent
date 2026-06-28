@@ -10,6 +10,7 @@ import com.yuyu.fishagent.chat.budget.BudgetPlan;
 import com.yuyu.fishagent.chat.budget.BudgetRequest;
 import com.yuyu.fishagent.chat.budget.ContextBudgetAllocator;
 import com.yuyu.fishagent.chat.budget.ContextWindowTrimmer;
+import com.yuyu.fishagent.chat.dto.SourceRef;
 import com.yuyu.fishagent.agent.tool.result.ToolResultGovernor;
 import com.yuyu.fishagent.common.trace.MdcAsync;
 import com.yuyu.fishagent.common.trace.TraceCollector;
@@ -320,6 +321,11 @@ public class ChatService {
                             log.error("[ChatService] 持久化失败 sid={}: {}", sid, e.getMessage(), e);
                             // persist 失败不阻塞 emitter 关闭
                         }
+                        // [v6.4 Top1] 答案出处下发：done 前发 sources 事件（RecallHit→SourceRef），非空才发
+                        List<SourceRef> sources = SourceRef.from(buildResult.sources());
+                        if (!sources.isEmpty()) {
+                            safeSend(emitter, "sources", sources);
+                        }
                         safeSend(emitter, "done", full);
                         turnLifecycle.success();
                         emitter.complete();
@@ -354,7 +360,8 @@ public class ChatService {
     private BuildMessagesResult buildMessages(String sid, Long userId, String userInput) {
         String clockLine = sessionClockAnchorLine();
         String instruction = properties.getInstruction() == null ? "" : properties.getInstruction().trim();
-        String requiredSystemText = instruction.isBlank() ? clockLine : clockLine + "\n\n---\n" + instruction;
+        // [v6.4] requiredSystemText 仅作 emergencyTrim 的"必需保留集"，顺序也稳定段前置（含时钟，降级时不丢时间锚点）
+        String requiredSystemText = instruction.isBlank() ? clockLine : instruction + "\n\n---\n" + clockLine;
 
         // 三级读穿；冷会话才会调用 L3 加载器（运行在当前 Servlet 线程，UserContext 可用）。
         ShortTermMemoryService.ShortTermMemoryLoadResult memoryResult = shortTermMemoryService.loadForTurnWithMetadata(
@@ -371,13 +378,12 @@ public class ChatService {
 
         boolean trimmed = budgetPlan.exhausted();
         // 合并为单条 SystemMessage：Alibaba ReactAgent 还会在内部拼接系统位，多条 SystemMessage 会触发 AgentLlmNode 英文 WARN 且不利于模型解析。
-        StringBuilder systemBlock = new StringBuilder(requiredSystemText);
         StringBuilder memoryTraceBlock = new StringBuilder();
+        String summaryBlock = "";
 
         if (snapshot.structuredSummary() != null) {
-            String summaryBlock = formatStructuredSummaryForContext(snapshot.structuredSummary(), budgetPlan.summaryBudget());
+            summaryBlock = formatStructuredSummaryForContext(snapshot.structuredSummary(), budgetPlan.summaryBudget());
             if (!summaryBlock.isBlank()) {
-                appendSystemSection(systemBlock, summaryBlock);
                 appendTraceSection(memoryTraceBlock, summaryBlock);
                 log.debug("[ChatService] 使用结构化短期记忆 sid={}", sid);
             } else {
@@ -388,7 +394,6 @@ public class ChatService {
         int effectiveExcerpts = countEffectiveExcerpts(snapshot.keyExcerpts());
         String excerptBlock = formatKeyExcerptsForContext(snapshot.keyExcerpts(), budgetPlan.excerptBudget());
         if (!excerptBlock.isBlank()) {
-            appendSystemSection(systemBlock, excerptBlock);
             appendTraceSection(memoryTraceBlock, excerptBlock);
             if (excerptBlockLineCount(excerptBlock) < effectiveExcerpts) {
                 trimmed = true;
@@ -398,29 +403,37 @@ public class ChatService {
         }
 
         SessionAgentState agentState = agentStateStore.load(userId, sid);
+        String stateBlock = "";
         if (agentState != null && !"IDLE".equals(agentState.phase())) {
-            String stateBlock = "## 当前会话状态\n" + formatAgentState(agentState);
+            stateBlock = "## 当前会话状态\n" + formatAgentState(agentState);
             if (budgetPlan.stateBudget() > 0 && TokenEstimator.estimate(stateBlock) <= budgetPlan.stateBudget()) {
-                appendSystemSection(systemBlock, stateBlock);
                 appendTraceSection(memoryTraceBlock, stateBlock);
             } else {
                 trimmed = true;
             }
         }
 
-        Optional<String> rag = budgetPlan.ragBudget() <= 0
+        Optional<RagRecall.AugmentationResult> ragResult = budgetPlan.ragBudget() <= 0
                 ? Optional.empty()
-                : longTermRagContextService.buildAugmentation(
+                : longTermRagContextService.buildAugmentationWithSources(
                 sid, userInput, extractContextHint(snapshot), budgetPlan.ragBudget());
-        if (rag.isPresent() && !rag.get().isBlank()) {
-            appendSystemSection(systemBlock, rag.get().trim());
-            log.debug("[ChatService] 已注入长期记忆 RAG sid={}, blockLen={}", sid, rag.get().length());
+        String ragBlock = ragResult.map(RagRecall.AugmentationResult::block)
+                .filter(b -> !b.isBlank()).map(String::trim).orElse("");
+        List<RagRecall.RecallHit> ragSources = ragResult
+                .map(RagRecall.AugmentationResult::hits).orElse(List.of());
+        if (!ragBlock.isEmpty()) {
+            log.debug("[ChatService] 已注入长期记忆 RAG sid={}, blockLen={}, sources={}",
+                    sid, ragBlock.length(), ragSources.size());
         } else if (budgetPlan.ragBudget() <= 0) {
             trimmed = true;
         }
 
+        // [v6.4] 缓存友好拼装：稳定段(instruction)前置、时钟锚点置末——避免秒级时间戳作为
+        // SystemMessage 首个 token 破坏 DeepSeek prompt cache 的整段前缀命中。
+        String systemBlock = assembleSystemBlock(instruction, clockLine, summaryBlock, excerptBlock, stateBlock, ragBlock);
+
         List<Message> messages = new ArrayList<>();
-        messages.add(new SystemMessage(systemBlock.toString()));
+        messages.add(new SystemMessage(systemBlock));
 
         List<ChatMessageDTO> contextMessages = snapshot.recentMessages() == null
                 ? List.of() : snapshot.recentMessages();
@@ -450,8 +463,9 @@ public class ChatService {
                 totalInputTokens,
                 budgetPlan.inputBudget(),
                 trimmed,
-                rag.orElse(null),
-                memoryTraceBlock.isEmpty() ? null : memoryTraceBlock.toString()
+                ragBlock.isEmpty() ? null : ragBlock,
+                memoryTraceBlock.isEmpty() ? null : memoryTraceBlock.toString(),
+                ragSources
         );
     }
 
@@ -465,7 +479,8 @@ public class ChatService {
             int inputBudget,
             boolean trimmed,
             String ragInjected,
-            String memoryInjected) {
+            String memoryInjected,
+            List<RagRecall.RecallHit> sources) {
     }
 
     /**
@@ -518,6 +533,29 @@ public class ChatService {
             systemBlock.append("\n\n---\n");
         }
         systemBlock.append(section.trim());
+    }
+
+    /**
+     * 按缓存友好顺序拼装 SystemMessage 正文 [v6.4]。
+     *
+     * <p>稳定段(instruction)前置、易变的时钟锚点置末，最大化 DeepSeek prompt cache 的前缀命中——
+     * 时钟行含秒级时间戳、跨 turn 必变，若排在首个 token 会让整段 system 前缀缓存每轮全量 miss。
+     * summary/excerpt/state/rag 保持原顺序居中；空段自动跳过（{@link #appendSystemSection}）。</p>
+     *
+     * <p>注：agentState(recentTools) 与 RAG 都每轮变化，二者先后对缓存命中长度无影响
+     * （稳定前缀都是 instruction+summary+excerpt），故无需重排它们，仅移动 clockLine 即拿到全部收益。</p>
+     */
+    static String assembleSystemBlock(String instruction, String clockLine,
+                                      String summaryBlock, String excerptBlock,
+                                      String stateBlock, String ragBlock) {
+        StringBuilder sb = new StringBuilder();
+        appendSystemSection(sb, instruction);
+        appendSystemSection(sb, summaryBlock);
+        appendSystemSection(sb, excerptBlock);
+        appendSystemSection(sb, stateBlock);
+        appendSystemSection(sb, ragBlock);
+        appendSystemSection(sb, clockLine);
+        return sb.toString();
     }
 
     /**
